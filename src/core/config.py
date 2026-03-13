@@ -54,5 +54,5 @@ FIB_CLUSTER_TOLERANCE: float = float(os.getenv("FIB_CLUSTER_TOLERANCE", "0.005")
 # --- Риск-менеджмент ---
 INITIAL_DEPOSIT: float = float(os.getenv("INITIAL_DEPOSIT", "10000"))
 RISK_PER_TRADE_PERCENT: float = float(os.getenv("RISK_PER_TRADE_PERCENT", "1.0"))
-MIN_RR_RATIO: float = float(os.getenv("MIN_RISK_REWARD_RATIO", "2.5"))
+MIN_RR_RATIO: float = float(os.getenv("MIN_RISK_REWARD_RATIO", "1.5"))
 EXCHANGE_FEE: float = float(os.getenv("EXCHANGE_FEE_PERCENT", "0.1"))

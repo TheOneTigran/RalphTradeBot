@@ -26,18 +26,32 @@ def get_math_trade_plan(context: LLMContext) -> TradePlan:
             continue
             
         extrema = _vectors_to_extrema(vectors)
-        tf_structures: List[WaveStructure] = []
         
-        # 1. Поиск паттернов на конкретном ТФ
-        recent_6 = extrema[-15:] if len(extrema) > 15 else extrema
-        recent_4 = extrema[-10:] if len(extrema) > 10 else extrema
+        # Используем экстремумы напрямую (уже профильтрованы в preprocessor)
+        final_extrema = extrema
+        recent_6 = final_extrema[-15:] if len(final_extrema) > 15 else final_extrema
+        recent_4 = final_extrema[-20:] if len(final_extrema) > 10 else final_extrema
         
+        tf_structures = []
+        tf_atr = tf_data.current_atr or 0
+        
+        # Находим sub_tf_vectors для фрактальной проверки
+        sub_tf_map = {"1d": "4h", "4h": "1h", "1h": "15m", "15m": "5m", "5m": None}
+        sub_tf_name = sub_tf_map.get(tf)
+        sub_tf_vectors = next((t.vectors for t in context.timeframes if t.timeframe == sub_tf_name), None) if sub_tf_name else None
+
         # --- 6-точечные паттерны ---
         if len(recent_6) >= 6:
             for i in range(len(recent_6) - 5):
                 pts = recent_6[i:i+6]
                 for func in [_check_impulse, _check_diagonal, _check_triangle]:
-                    res = func(pts, tf) if func != _check_impulse else func(pts, tf, vectors)
+                    # Передаем векторы и суб-векторы для фракталов и объема
+                    if func == _check_impulse:
+                        res = func(pts, tf, vectors, sub_tf_vectors)
+                    elif func == _check_diagonal:
+                        res = func(pts, tf, vectors)
+                    else:
+                        res = func(pts, tf)
                     if res: tf_structures.append(res)
         
         # --- 4-точечные паттерны ---
@@ -50,13 +64,17 @@ def get_math_trade_plan(context: LLMContext) -> TradePlan:
         
         # --- Формирующиеся 1-2-3 ---
         if len(extrema) >= 4:
-            res = _check_forming_123(extrema[-4:], tf)
+            res = _check_forming_123(extrema[-4:], tf, sub_tf_vectors)
             if res: tf_structures.append(res)
 
         # Фильтруем только "свежие" паттерны
-        recent_ts = {round(float(e.timestamp)) for e in extrema[-3:]}
+        recent_ts = {round(float(e.timestamp)) for e in extrema[-20:]}
+        # logger.info(f"    [DEBUG] TF:{tf} | Extrema total:{len(extrema)} | Structures found:{len(tf_structures)}")
         for s in tf_structures:
-            if round(float(s.points[-1].timestamp)) in recent_ts:
+            last_ts = round(float(s.points[-1].timestamp))
+            is_recent = last_ts in recent_ts
+            logger.info(f"  [MATH] Найден паттерн {s.pattern_type} ({tf}) {s.direction}, конфиденс: {s.confidence:.1f} | Fresh:{is_recent}")
+            if is_recent:
                 # Добавляем базовый бонус сложности
                 bonus = 0
                 if "Импульс" in s.pattern_type: bonus = 40
@@ -64,7 +82,7 @@ def get_math_trade_plan(context: LLMContext) -> TradePlan:
                 elif "Треугольник" in s.pattern_type: bonus = 25
                 elif "Зигзаг" in s.pattern_type: bonus = 10
                 s.confidence += bonus
-                all_valid_structures.append((tf, s))
+                all_valid_structures.append((tf, s, tf_atr))
 
     if not all_valid_structures:
         return TradePlan(
@@ -77,14 +95,14 @@ def get_math_trade_plan(context: LLMContext) -> TradePlan:
     # 2. Кросс-ТФ подтверждение (Weighted Scoring)
     # Если на разных ТФ одинаковое направление — даем бонус
     direction_votes = {"LONG": 0.0, "SHORT": 0.0}
-    for tf, s in all_valid_structures:
+    for tf, s, atr in all_valid_structures:
         dir_key = "LONG" if s.direction == "БЫЧИЙ" else "SHORT"
         weight = {"1d": 3.0, "4h": 2.0, "1h": 1.5, "15m": 1.0, "5m": 0.5}.get(tf, 1.0)
         direction_votes[dir_key] += (s.confidence / 100.0) * weight
 
     # Сортируем все найденные структуры по итоговому весу
     def score_structure(item):
-        tf, s = item
+        tf, s, atr = item
         dir_key = "LONG" if s.direction == "БЫЧИЙ" else "SHORT"
         # Итоговый балл = уверенность + бонус за общее направление рынка
         return s.confidence + (direction_votes[dir_key] * 10)
@@ -92,26 +110,33 @@ def get_math_trade_plan(context: LLMContext) -> TradePlan:
     all_valid_structures.sort(key=score_structure, reverse=True)
 
     # 3. Выбор Main и Alternative
-    best_tf, best_s = all_valid_structures[0]
-    main_plan = _convert_structure_to_plan(best_s, context, best_tf)
+    current_idx = 0
+    best_tf, best_s, best_atr = all_valid_structures[current_idx]
+    main_plan = _convert_structure_to_plan(best_s, context, best_tf, best_atr)
     
     alt_desc = "Нет альтернатив"
     if len(all_valid_structures) > 1:
-        alt_tf, alt_s = all_valid_structures[1]
+        alt_tf, alt_s, _alt_atr = all_valid_structures[1]
         alt_desc = f"Альтернатива: {alt_s.pattern_type} {alt_s.direction} на {alt_tf} ({alt_s.confidence:.0f}%)"
 
     if not main_plan:
-        # Если лучший не прошел R:R, пробуем второй и т.д.
-        for i in range(1, len(all_valid_structures)):
-            best_tf, best_s = all_valid_structures[i]
-            main_plan = _convert_structure_to_plan(best_s, context, best_tf)
-            if main_plan: break
-            
+        for i_alt in range(1, len(all_valid_structures)):
+            best_tf, best_s, best_atr = all_valid_structures[i_alt]
+            main_plan = _convert_structure_to_plan(best_s, context, best_tf, best_atr)
+            if main_plan:
+                current_idx = i_alt
+                break
     if not main_plan:
         return TradePlan(wave_count_label="RR Filtered", main_scenario="WAIT", trade_params={"direction": "WAIT"})
 
+    alt_desc = "Нет альтернатив"
+    rem_idx = 0 if current_idx != 0 else 1
+    if len(all_valid_structures) > 1:
+        alt_tf, alt_s, _alt_atr = all_valid_structures[rem_idx]
+        alt_desc = f"Альтернатива: {alt_s.pattern_type} {alt_s.direction} на {alt_tf} ({alt_s.confidence:.0f}%)"
+
     # Добавляем информацию об альтернативах в логику
-    all_seen = [f"{s.pattern_type}({tf})" for tf, s in all_valid_structures[:4]]
+    all_seen = [f"{s.pattern_type}({tf})" for tf, s, atr in all_valid_structures[:4]]
     main_plan.detailed_logic = (
         f"ГЛАВНЫЙ: {best_s.pattern_type} ({best_tf}). "
         f"Рассмотрено параллельно: {', '.join(all_seen)}. "
@@ -121,28 +146,72 @@ def get_math_trade_plan(context: LLMContext) -> TradePlan:
     
     return main_plan
 
-def _convert_structure_to_plan(s: WaveStructure, context: LLMContext, tf: str) -> Optional[TradePlan]:
-    """Превращает математическую структуру в торговый план."""
+def _convert_structure_to_plan(s: WaveStructure, context: LLMContext, tf: str, atr: float = 0) -> Optional[TradePlan]:
+    """Превращает математическую структуру в торговый план с подтверждением входа."""
     
-    direction = "LONG" if s.direction == "БЫЧИЙ" else "SHORT"
-    entry = s.points[-1].price # Вход по рынку в конце паттерна (упрощенно)
-    sl = s.invalidation_price
+    # ── Направление сделки ──
+    is_reversal = s.pattern_type in ["Импульс", "Зигзаг", "Диагональ", "Плоскость"]
     
+    if is_reversal:
+        direction = "SHORT" if s.direction == "БЫЧИЙ" else "LONG"
+    else:
+        direction = "LONG" if s.direction == "БЫЧИЙ" else "SHORT"
+    
+    # ── ПУНКТ 2.А: Вход по подтверждению (ATR-учет) ──
+    last_p = s.points[-1]
+    prev_p = s.points[-2]
+    
+    offset = atr * 0.07 if atr > 0 else (prev_p.price * 0.0005)
+
+    if is_reversal:
+        sl = last_p.price
+        if direction == "LONG":
+            entry = prev_p.price + offset
+        else:
+            entry = prev_p.price - offset
+    else:
+        sl = s.invalidation_price
+        if direction == "LONG":
+            entry = last_p.price + offset
+        else:
+            entry = last_p.price - offset
+
+    # Убедимся, что стоп не равен входу и находится с нужной стороны
     if not sl or sl == entry:
+        logger.warning(f"  [PLAN] Отказ: SL == Entry ({sl})")
+        return None
+    if direction == "LONG" and sl >= entry:
+        logger.warning(f"  [PLAN] Отказ: LONG SL({sl}) >= Entry({entry})")
+        return None
+    if direction == "SHORT" and sl <= entry:
+        logger.warning(f"  [PLAN] Отказ: SHORT SL({sl}) <= Entry({entry})")
         return None
         
-    # Цель: либо канал, либо Фибо (например 1.618 от предыдущей волны)
-    tp = s.channel_target
-    if not tp:
-        # Используем MIN_RR_RATIO из конфига + небольшой запас (0.1), чтобы точно пройти валидацию
-        mult = max(2.0, MIN_RR_RATIO + 0.1)
-        dist = abs(entry - sl)
-        tp = entry + dist * mult if direction == "LONG" else entry - dist * mult
+    # ── ПУНКТ 4: Геометрический Тейк-Профит ──
+    # Ищем цели среди Фибо-уровней и Каналов
+    targets = sorted(s.fibo_targets) if s.fibo_targets else []
+    if s.channel_target: targets.append(s.channel_target)
+    
+    if not targets:
+        # Если целей нет, используем Фибо-расширение 1.618 как стандарт
+        dist = abs(s.points[-1].price - s.points[0].price)
+        tp = entry + dist * 1.618 if direction == "LONG" else entry - dist * 1.618
+    else:
+        # ПУНКТ 2.Б: Выбираем БЛИЖАЙШУЮ цель, проходящую по R:R
+        # Сортируем по расстоянию от точки входа
+        targets.sort(key=lambda t: abs(t - entry))
+        risk = abs(entry - sl)
+        valid_targets = [t for t in targets if (abs(t - entry) / risk) >= MIN_RR_RATIO]
+        
+        if not valid_targets:
+            return None
+        tp = valid_targets[0] # Самая близкая, но валидная цель
 
-    # Проверка R:R
+    # Финальная проверка R:R
     risk = abs(entry - sl)
     reward = abs(tp - entry)
     if risk == 0 or (reward / risk) < MIN_RR_RATIO:
+        logger.info(f"    [RR_FAIL] План не прошел валидацию: {direction} R:R={reward/risk:.2f} < {MIN_RR_RATIO}")
         return None
         
     # Формируем WaveCoordinate для плана

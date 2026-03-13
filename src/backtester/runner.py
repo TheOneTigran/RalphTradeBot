@@ -151,7 +151,25 @@ def run_backtest(
                 plan = run_full_ai_pipeline(context, use_critic=use_critic)
             
             direction = str(plan.trade_params.get("direction", "")).upper()
-            if "WAIT" in direction or not direction:
+            if not direction: continue
+            
+            if "WAIT" in direction:
+                if plan.wave_count_label == "RR Filtered":
+                    # Логируем отсеянный по RR паттерн
+                    results.append({
+                        "ts": ts,
+                        "date": dt.strftime('%Y-%m-%d %H:%M'),
+                        "direction": "WAIT (RR)",
+                        "status": "RR_FILTERED",
+                        "rr_ratio": 0,
+                        "pnl_pct": 0,
+                        "pnl_usd": 0,
+                        "fee_usd": 0,
+                        "balance": round(current_balance, 2),
+                        "pos_size_usd": 0,
+                        "leverage": 0,
+                        "reasoning": plan.detailed_logic[:200]
+                    })
                 continue
                 
             # --- ОБЯЗАТЕЛЬНАЯ ВАЛИДАЦИЯ ---

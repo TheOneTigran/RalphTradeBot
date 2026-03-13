@@ -116,6 +116,7 @@ class WaveStructure:
     confidence: float = 0.0    # Оценка "качества" паттерна (0-100)
     details: str = ""          # Пояснение почему именно этот паттерн
     channel_target: Optional[float] = None  # Целевая цена по каналу Эллиотта
+    fibo_targets: List[float] = field(default_factory=list) # Список целей по расширениям Фибоначчи
     invalidation_price: Optional[float] = None  # Цена инвалидации разметки
     is_completed: bool = False  # True = структура завершена (не текущая)
 
@@ -128,9 +129,10 @@ class WaveStructure:
         
         pts_str = " | ".join(segments)
         ch = f" | Канал-цель: {self.channel_target:.2f}" if self.channel_target else ""
+        fb = f" | Фибо-цели: {', '.join([f'{t:.2f}' for t in self.fibo_targets])}" if self.fibo_targets else ""
         inv = f" | ⛔Инвалидация: {self.invalidation_price:.2f}" if self.invalidation_price else ""
         status = "[ЗАВЕРШЁН]" if self.is_completed else "[АКТИВНЫЙ]"
-        return f"{status} {self.direction} {self.pattern_type} [{self.confidence:.0f}%]: {pts_str}{ch}{inv}"
+        return f"{status} {self.direction} {self.pattern_type} [{self.confidence:.0f}%]: {pts_str}{ch}{fb}{inv}"
 
 
 def _deduplicate_structures(structures: List[WaveStructure]) -> List[WaveStructure]:
@@ -329,14 +331,26 @@ def _fractal_validate_wave(
 
     if expected_internal == "impulse":
         # Ищем 5-волновой импульс внутри
+        has_correct = False
+        has_wrong = False
         if len(sub_extrema) >= 6:
             for start_idx in range(len(sub_extrema) - 5):
                 sub_pts = sub_extrema[start_idx: start_idx + 6]
-                result = _check_impulse_core(sub_pts)
-                if result:
-                    return 10.0, f"✓ Фрактал: внутри найден {result} на младшем ТФ"
-            return -10.0, "✗ Фрактал: внутри НЕ найден 5-волновой импульс"
-        return -5.0, f"Недостаточно экстремумов для фрактальной проверки ({len(sub_extrema)})"
+                if _check_impulse_core(sub_pts):
+                    has_correct = True; break
+        
+        # Проверяем "не-импульсную" природу (WXY/Zigzag) - КРИТИКА Пункт 5
+        if not has_correct and len(sub_extrema) >= 4:
+            for start_idx in range(len(sub_extrema) - 3):
+                sub_pts = sub_extrema[start_idx: start_idx + 4]
+                if _check_zigzag_core(sub_pts) or _check_wxy_core(sub_pts):
+                    has_wrong = True; break
+
+        if has_correct:
+            return 15.0, "✓ Фрактал: подтвержден внутренний микро-импульс"
+        if has_wrong:
+            return -20.0, "✗ Фрактал: вместо импульса обнаружена тройка (WXY/Zigzag)"
+        return -5.0, f"Фрактал неясен (всего {len(sub_extrema)} точек)"
 
     elif expected_internal == "correction":
         # Ищем 3-волновую коррекцию внутри
@@ -365,11 +379,13 @@ def _check_impulse_core(pts: List[Extremum]) -> Optional[str]:
                 p3.price > p2.price and p4.price < p3.price and
                 p5.price > p4.price):
             return None
+        if p3.price <= p1.price: return None
     else:
         if not (p1.price < p0.price and p2.price > p1.price and
                 p3.price < p2.price and p4.price > p3.price and
                 p5.price < p4.price):
             return None
+        if p3.price >= p1.price: return None
 
     len1 = abs(p1.price - p0.price)
     len3 = abs(p3.price - p2.price)
@@ -432,6 +448,20 @@ def _check_flat_core(pts: List[Extremum]) -> bool:
 # Проверки паттернов (полные, с объектами WaveStructure)
 # ═════════════════════════════════════════════════════════════════════════════
 
+
+def _check_wxy_core(pts: List[Extremum]) -> bool:
+    """Быстрая проверка 4 точек на W-X-Y."""
+    p0, pW, pX, pY = pts
+    bullish = pW.price > p0.price
+    lenW = abs(pW.price - p0.price)
+    lenX = abs(pX.price - pW.price)
+    lenY = abs(pY.price - pX.price)
+    if lenW == 0: return False
+    if lenX >= lenW: return False
+    if bullish and pY.price <= pW.price: return False
+    if not bullish and pY.price >= pW.price: return False
+    return True
+
 def _check_impulse(
     pts: List[Extremum],
     timeframe: str,
@@ -461,11 +491,13 @@ def _check_impulse(
                 p3.price > p2.price and p4.price < p3.price and
                 p5.price > p4.price):
             return None
+        if p3.price <= p1.price: return None
     else:
         if not (p1.price < p0.price and p2.price > p1.price and
                 p3.price < p2.price and p4.price > p3.price and
                 p5.price < p4.price):
             return None
+        if p3.price >= p1.price: return None
 
     len1 = abs(p1.price - p0.price)
     len2 = abs(p2.price - p1.price)
@@ -535,35 +567,68 @@ def _check_impulse(
         else:
             confidence -= 15  # Сильно снижаем — возможно это C, не 5
 
-    # ── Канал Эллиотта ────────────────
+    # ── ПРАВИЛА (Rules) - Если нарушены, это не импульс ────
+    # 1. Волна 2 не заходит за начало Волны 1
+    if bullish and p2.price <= p0.price: return None
+    if not bullish and p2.price >= p0.price: return None
+    
+    # 2. Волна 3 не должна быть самой короткой (среди 1, 3, 5)
+    len1, len3, len5 = abs(p1.price-p0.price), abs(p3.price-p2.price), abs(p5.price-p4.price)
+    if len3 < len1 and len3 < len5: return None
+    
+    # 3. Волна 4 не заходит в территорию Волны 1 (для чистого импульса)
+    if bullish and p4.price <= p1.price: return None
+    if not bullish and p4.price >= p1.price: return None
+    
+    # 4. Волна 3 пробивает пик Волны 1
+    if bullish and p3.price <= p1.price: return None
+    if not bullish and p3.price >= p1.price: return None
+
+    # 5. Волна 5 пробивает пик Волны 3 (строгое правило V3)
+    if bullish and p5.price <= p3.price: return None
+    if not bullish and p5.price >= p3.price: return None
+
+    # ── НОРМЫ (Guidelines / Confidence) ────
+    confidence = 40.0 # База за прохождение Правил
+    details_parts = []
+
+    # Фибо-пропорции (Норма)
+    ratio3_1 = len3 / len1 if len1 > 0 else 0
+    if 1.618 <= ratio3_1 <= 2.618: confidence += 20; details_parts.append("W3 расширенная (Норма)")
+    elif 1.0 <= ratio3_1 < 1.618: confidence += 10; details_parts.append("W3 стандартная")
+    
+    ratio2_1 = abs(p2.price-p1.price) / len1 if len1 > 0 else 0
+    if 0.5 <= ratio2_1 <= 0.618: confidence += 10; details_parts.append("W2 глубокая коррекция (Норма)")
+    
+    # Чередование (Alternation) - Волна 2 (острая) vs Волна 4 (боковая)
+    # Здесь упрощенно: если W2 глубокая (>0.5), а W4 мелкая (<0.382) -> Бонус
+    ratio4_3 = abs(p4.price-p3.price) / len3 if len3 > 0 else 0
+    if ratio2_1 > 0.5 and ratio4_3 < 0.4: confidence += 15; details_parts.append("Чередование W2/W4 (Норма)")
+
+    # Канал Эллиотта
     channel_target = _calculate_elliott_channel(pts, bullish)
     if channel_target:
-        details_parts.append(f"Канал Эллиотта → цель W5: {channel_target:.2f}")
+        confidence += 10
+        details_parts.append(f"Канал Эллиотта → цель W5 достигнута")
 
-    # ── Фрактальная рекурсия (W3) ────
+    # Цели после завершения импульса (Коррекция)
+    # После 5 волн ожидаем откат к 0.382, 0.5 или 0.618 всей длины (0-5)
+    total_len = abs(p5.price - p0.price)
+    fibo_targets = []
+    for f in [0.382, 0.618, 1.0, 1.618]:
+        target = p5.price - (total_len * f) if bullish else p5.price + (total_len * f)
+        fibo_targets.append(round(target, 2))
+
+    # Фрактальная рекурсия (W3)
     if sub_tf_vectors:
-        # W3 должна содержать 5-волновой импульс внутри
-        frac_adj, frac_desc = _fractal_validate_wave(
-            p2.timestamp, p3.timestamp, sub_tf_vectors, "impulse"
-        )
+        frac_adj, frac_desc = _fractal_validate_wave(p2.timestamp, p3.timestamp, sub_tf_vectors, "impulse")
         confidence += frac_adj
         details_parts.append(frac_desc)
 
-        # W2 должна быть коррекцией внутри
-        frac_adj2, frac_desc2 = _fractal_validate_wave(
-            p1.timestamp, p2.timestamp, sub_tf_vectors, "correction"
-        )
-        confidence += frac_adj2
-        if frac_adj2 != 0:
-            details_parts.append(frac_desc2)
-
-    confidence = min(max(confidence, 10), 95)
-
     direction = "БЫЧИЙ" if bullish else "МЕДВЕЖИЙ"
     labels = _get_labels(timeframe, "impulse")
-    # Инвалидация: цена начала волны 1 (W2 не должна заходить за неё)
-    inv_price = p0.price
-
+    inv_price = p0.price # Для импульса инвалидация - начало W1
+    
     wave_points = [
         WavePoint(label=labels[i], price=pts[i].price, timestamp=pts[i].timestamp)
         for i in range(6)
@@ -573,9 +638,10 @@ def _check_impulse(
         pattern_type="Импульс",
         direction=direction,
         points=wave_points,
-        confidence=confidence,
+        confidence=min(confidence, 100),
         details=", ".join(d for d in details_parts if d),
         channel_target=channel_target,
+        fibo_targets=fibo_targets,
         invalidation_price=round(inv_price, 2),
     )
 
@@ -598,11 +664,13 @@ def _check_diagonal(
                 p3.price > p2.price and p4.price < p3.price and
                 p5.price > p4.price):
             return None
+        if p3.price <= p1.price: return None
     else:
         if not (p1.price < p0.price and p2.price > p1.price and
                 p3.price < p2.price and p4.price > p3.price and
                 p5.price < p4.price):
             return None
+        if p3.price >= p1.price: return None
 
     len1 = abs(p1.price - p0.price)
     len2 = abs(p2.price - p1.price)
@@ -616,14 +684,23 @@ def _check_diagonal(
     if not bullish and p4.price < p1.price:
         return None
 
-    # Убывание длин: 1 > 3 > 5 и 2 > 4
-    if not (len1 > len3 > len5 * 0.8):
+    # --- ПУНКТ 2: Сходящаяся vs Расширяющаяся Диагональ ---
+    is_contracting = len1 > len3 > len5 * 0.8
+    is_expanding = len1 < len3 < len5 * 1.2
+    
+    if not (is_contracting or is_expanding):
         return None
-    if not (len2 > len4 * 0.8):
-        return None
+    
+    if is_expanding:
+        # В расширяющейся Волна 4 обычно глубже Волны 2
+        if bullish and p4.price > p2.price: return None
+        if not bullish and p4.price < p2.price: return None
+        subtype = "Расширяющаяся"
+    else:
+        subtype = "Сходящаяся"
 
-    confidence = 55.0
-    details_parts = [f"W1={len1:.2f}>W3={len3:.2f}>W5={len5:.2f}. W4 зашла в зону W1."]
+    confidence = 65.0
+    details_parts = [f"{subtype} Диагональ: W1={len1:.0f}, W3={len3:.0f}, W5={len5:.0f}. W4 зашла в зону W1."]
 
     # Объёмная проверка для диагоналей
     if vectors:
@@ -664,42 +741,58 @@ def _check_zigzag(pts: List[Extremum], timeframe: str) -> Optional[WaveStructure
     p0, pA, pB, pC = pts
     bullish = pA.price > p0.price
 
+    # ── ПРАВИЛА (Rules) ────
+    # 1. Формально точки должны идти зигзагом
     if bullish:
-        if not (pA.price > p0.price and pB.price < pA.price and pC.price > pB.price):
-            return None
+        if not (pA.price > p0.price and pB.price < pA.price and pC.price > pB.price): return None
     else:
-        if not (pA.price < p0.price and pB.price > pA.price and pC.price < pB.price):
-            return None
+        if not (pA.price < p0.price and pB.price > pA.price and pC.price < pB.price): return None
 
-    lenA = abs(pA.price - p0.price)
-    lenB = abs(pB.price - pA.price)
-    lenC = abs(pC.price - pB.price)
+    lenA, lenB, lenC = abs(pA.price - p0.price), abs(pB.price - pA.price), abs(pC.price - pB.price)
 
-    if lenB >= lenA:
-        return None
-    if bullish and pC.price <= pA.price:
-        return None
-    if not bullish and pC.price >= pA.price:
-        return None
-    if lenA > 0 and lenC < 0.618 * lenA:
-        return None
+    # 2. Волна B не должна заходить за начало Волны A
+    if lenB >= lenA: return None
+    
+    # 3. Волна C должна пробить пик Волны A (иначе это может быть треугольник)
+    if bullish and pC.price <= pA.price: return None
+    if not bullish and pC.price >= pA.price: return None
 
+    # ── НОРМЫ (Guidelines / Confidence) ────
     confidence = 50.0
+    details_parts = []
+    
     ratioB = lenB / lenA if lenA > 0 else 0
     ratioC = lenC / lenA if lenA > 0 else 0
 
-    if 0.3 <= ratioB <= 0.8:
-        confidence += 15
+    # Норма для B: откат 38.2% - 61.8%
+    if 0.382 <= ratioB <= 0.618: confidence += 15; details_parts.append("W-B нормальный откат")
+    elif ratioB > 0.8: confidence -= 10; details_parts.append("W-B слишком глубокая")
+
+    # Норма для C: равенство с A или расширение 1.618
+    target_hit = False
     for target in [0.618, 1.0, 1.272, 1.618]:
         if abs(ratioC - target) < 0.1:
             confidence += 15
+            details_parts.append(f"W-C достигла Фибо-{target}")
+            target_hit = True
             break
+    if not target_hit: confidence -= 5
 
-    confidence = min(confidence, 90)
+    # Цели после завершения зигзага 
+    # Если это коррекция, ожидаем возврат к началу импульса или 1.618 предыдущего движения.
+    # Здесь упрощенно: цели на разворот (0.618 и 1.0 от всего ABC)
+    total_len = abs(pC.price - p0.price)
+    fibo_targets = []
+    # Если зигзаг бычий (вниз-вверх-вниз?), мы ждем разворот в SHORT? 
+    # Нет, bullish в коде значит pA > p0 (движение вверх). Т.е. зигзаг на РОСТ. 
+    # Значит после C (пик) ждем откат.
+    for f in [0.618, 1.0]:
+        target = pC.price - (total_len * f) if bullish else pC.price + (total_len * f)
+        fibo_targets.append(round(target, 2))
+
     direction = "БЫЧИЙ" if bullish else "МЕДВЕЖИЙ"
     labels = _get_labels(timeframe, "correction")
-    # Инвалидация зигзага: начало волны A
-    inv_price = p0.price
+    inv_price = p0.price # Начало A
 
     wave_points = [
         WavePoint(label=labels[i], price=pts[i].price, timestamp=pts[i].timestamp)
@@ -710,8 +803,9 @@ def _check_zigzag(pts: List[Extremum], timeframe: str) -> Optional[WaveStructure
         pattern_type="Зигзаг",
         direction=direction,
         points=wave_points,
-        confidence=confidence,
-        details=f"A={lenA:.2f}, B={ratioB:.1%} от A, C={ratioC:.1%} от A ({lenC:.2f})",
+        confidence=min(confidence, 95),
+        details=f"A={lenA:.2f}, B={ratioB:.1%} от A, C={ratioC:.1%} от A. " + ", ".join(details_parts),
+        fibo_targets=fibo_targets,
         invalidation_price=round(inv_price, 2),
     )
 
@@ -738,7 +832,8 @@ def _check_flat(pts: List[Extremum], timeframe: str) -> Optional[WaveStructure]:
         return None
 
     ratioB = lenB / lenA
-    if ratioB < 0.80 or ratioB > 1.382:
+    # КРИТИКА: Плоскость обязана иметь откат B >= 90% от A
+    if ratioB < 0.90 or ratioB > 1.382:
         return None
     if lenB > 0 and lenC < 0.618 * lenB:
         return None
@@ -749,11 +844,14 @@ def _check_flat(pts: List[Extremum], timeframe: str) -> Optional[WaveStructure]:
     if ratioB > 1.0:
         confidence += 5
 
-    confidence = min(confidence, 85)
+    confidence = min(confidence, 90)
     direction = "БЫЧИЙ" if bullish else "МЕДВЕЖИЙ"
     subtype = "Расширенная" if ratioB > 1.05 else "Обычная"
     labels = _get_labels(timeframe, "correction")
-    inv_price = p0.price
+    inv_price = p0.price if ratioB <= 1.0 else pB.price
+
+    # Цели: возврат к началу импульса
+    fibo_targets = [round(p0.price, 2)]
 
     wave_points = [
         WavePoint(label=labels[i], price=pts[i].price, timestamp=pts[i].timestamp)
@@ -766,6 +864,7 @@ def _check_flat(pts: List[Extremum], timeframe: str) -> Optional[WaveStructure]:
         points=wave_points,
         confidence=confidence,
         details=f"B={ratioB:.1%} от A, C={lenC:.2f}",
+        fibo_targets=fibo_targets,
         invalidation_price=round(inv_price, 2),
     )
 
@@ -807,6 +906,13 @@ def _check_wxy(pts: List[Extremum], timeframe: str) -> Optional[WaveStructure]:
         confidence += 10
 
     confidence = min(confidence, 80)
+    # Цели после WXY (аналогично зигзагу)
+    total_len = abs(pY.price - p0.price)
+    fibo_targets = []
+    for f in [0.618, 1.0]:
+        target = pY.price - (total_len * f) if bullish else pY.price + (total_len * f)
+        fibo_targets.append(round(target, 2))
+
     direction = "БЫЧИЙ" if bullish else "МЕДВЕЖИЙ"
     labels = _get_labels(timeframe, "wxy")
     inv_price = p0.price
@@ -822,6 +928,7 @@ def _check_wxy(pts: List[Extremum], timeframe: str) -> Optional[WaveStructure]:
         points=wave_points,
         confidence=confidence,
         details=f"X={ratioX:.1%} от W, Y={ratioY:.1%} от W ({lenY:.2f})",
+        fibo_targets=fibo_targets,
         invalidation_price=round(inv_price, 2),
     )
 
@@ -868,15 +975,15 @@ def _check_triangle(pts: List[Extremum], timeframe: str) -> Optional[WaveStructu
     # Сходимость линий: A-C должны сужаться, B-D тоже
     # Для бычьего: пики убывают (pA > pC > pE), впадины растут (p0 < pB < pD)
     # Для медвежьего: зеркально
+    # Сходимость линий: пики должны снижаться, впадины расти (контракт)
     if a_bull:
-        peaks_converge = pA.price > pC.price and pC.price > pE.price
-        troughs_converge = p0.price < pB.price and pB.price < pD.price
+        # Хаи снижаются (A > C > E), Лои растут (0 < B < D)
+        if not (pA.price > pC.price > pE.price): return None
+        if not (p0.price < pB.price < pD.price): return None
     else:
-        peaks_converge = p0.price > pB.price and pB.price > pD.price
-        troughs_converge = pA.price < pC.price and pC.price < pE.price
-
-    if not (peaks_converge and troughs_converge):
-        return None
+        # Лои растут (A < C < E), Хаи снижаются (0 > B > D)
+        if not (pA.price < pC.price < pE.price): return None
+        if not (p0.price > pB.price > pD.price): return None
 
     confidence = 55.0
 
@@ -984,6 +1091,15 @@ def _check_forming_123(
     # Инвалидация: начало формирования (точка 0)
     inv_price = p0.price
 
+    # Цели для продолжения тренда (W5)
+    fibo_targets = []
+    # Волна 4 (откат W3): 0.382
+    target4 = p3.price - (len3 * 0.382) if bullish else p3.price + (len3 * 0.382)
+    fibo_targets.append(round(target4, 2))
+    # Волна 5: W1 + W3 (приблизительно)
+    target5 = p3.price + (len1 * 0.618) if bullish else p3.price - (len1 * 0.618)
+    fibo_targets.append(round(target5, 2))
+
     wave_points = [
         WavePoint(label=labels[i], price=pts[i].price, timestamp=pts[i].timestamp)
         for i in range(4)
@@ -995,6 +1111,7 @@ def _check_forming_123(
         points=wave_points,
         confidence=confidence,
         details=" ".join(details_parts),
+        fibo_targets=fibo_targets,
         invalidation_price=round(inv_price, 2),
     )
 
