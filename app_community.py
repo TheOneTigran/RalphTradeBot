@@ -169,19 +169,25 @@ db = get_db()
 @st.cache_data(ttl=3600)
 def fetch_ohlcv_safe(symbol: str, timeframe: str, limit: int = 2000):
     """
-    Загружает OHLCV с Binance с паузами между батчами.
+    Загружает OHLCV с Bybit с паузами.
+    Streamlit Cloud заблокирован на Binance (US IP), поэтому используем Bybit.
+    Лимит батча Bybit — строго 200 свечей, иначе Rate Limit.
     """
-    exchange = ccxt.binance({
+    exchange = ccxt.bybit({
         "enableRateLimit": True,
-        "rateLimit": 250,          # ms между запросами (Binance)
-        "options": {"defaultType": "spot"},
+        "rateLimit": 500,
+        "options": {"defaultType": "linear"},
     })
     tf_sec = exchange.parse_timeframe(timeframe)
-    batch_size = 500  # Binance разрешает больше
+    batch_size = 200  # Bybit strict chunk size
     all_raw = []
 
+    # Ccxt sometimes needs /USDT format depending on version, 
+    # but Bybit linear accepts standard. We'll use ccxt standard.
+    ccxt_symbol = symbol.replace("USDT", "/USDT:USDT") if "USDT" in symbol else symbol
+
     try:
-        latest = exchange.fetch_ohlcv(symbol, timeframe, limit=1)
+        latest = exchange.fetch_ohlcv(ccxt_symbol, timeframe, limit=1)
         if not latest:
             return []
         since = latest[0][0] - (limit * tf_sec * 1000)
@@ -189,16 +195,17 @@ def fetch_ohlcv_safe(symbol: str, timeframe: str, limit: int = 2000):
         while len(all_raw) < limit:
             remaining = limit - len(all_raw)
             fetch_n = min(batch_size, remaining)
-            batch = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=fetch_n)
+            batch = exchange.fetch_ohlcv(ccxt_symbol, timeframe, since=since, limit=fetch_n)
             if not batch:
                 break
             all_raw.extend(batch)
             since = batch[-1][0] + tf_sec * 1000
             if len(batch) < fetch_n:
                 break
-            time.sleep(0.3)
+            time.sleep(0.5)
 
-    except ccxt.RateLimitExceeded:
+    except Exception as e:
+        logger.error(f"Fetch Error: {e}")
         if not all_raw:
             return []
         # Возвращаем что успели загрузить
@@ -291,10 +298,10 @@ with st.sidebar:
         if not reviewer.strip() or reviewer.strip().lower() == "anonymous":
             st.error("⚠️ Пожалуйста, введите ваше имя (ник) перед загрузкой!")
         else:
-            with st.spinner(f"Загрузка {symbol} {timeframe} с Binance..."):
+            with st.spinner(f"Загрузка {symbol} {timeframe} с Bybit (может занять 5-10 сек)..."):
                 candles = fetch_ohlcv_safe(symbol, timeframe, limit=2000)
             if not candles:
-                st.error("Не удалось загрузить данные. Попробуй позже — Binance rate limit.")
+                st.error("Не удалось загрузить историю. Попробуй позже (Bybit rate limit).")
             else:
                 with st.spinner(f"Wave Engine анализирует {len(candles)} свечей..."):
                     n = build_queue(symbol, timeframe, candles)
