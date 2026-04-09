@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  # 1. Redis for high-performance orderbook caching and fast-path state
+  redis:
+    image: redis:7-alpine
+    container_name: ralph_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --save 60 1 --loglevel warning
+    restart: unless-stopped
+
+  # 2. Main analytical engine (Backend)
+  engine:
+    build: .
+    container_name: ralph_engine
+    depends_on:
+      - redis
+    environment:
+      - BYBIT_API_KEY=${BYBIT_API_KEY:-}
+      - BYBIT_API_SECRET=${BYBIT_API_SECRET:-}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - ./data:/app/data   # Persistent DuckDB storage and models
+      - ./logs:/app/logs   # Application logs
+    # Running live forward testing by default 
+    command: python main.py --mode live --symbol BTCUSDT
+    restart: unless-stopped
+
+  # 3. Streamlit HITL Dashboard (Frontend)
+  dashboard:
+    build: .
+    container_name: ralph_dashboard
+    depends_on:
+      - engine
+    ports:
+      - "8501:8501"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - ./data:/app/data
+    command: streamlit run src/labeling/app.py
+    restart: unless-stopped
+
+volumes:
+  redis_data:

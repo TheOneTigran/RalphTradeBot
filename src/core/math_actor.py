@@ -67,12 +67,15 @@ def get_math_trade_plan(context: LLMContext) -> TradePlan:
             res = _check_forming_123(extrema[-4:], tf, sub_tf_vectors)
             if res: tf_structures.append(res)
 
-        # Фильтруем только "свежие" паттерны
-        recent_ts = {round(float(e.timestamp)) for e in extrema[-20:]}
-        # logger.info(f"    [DEBUG] TF:{tf} | Extrema total:{len(extrema)} | Structures found:{len(tf_structures)}")
+        # Сохраняем найденные структуры в стейт для визуализатора
+        tf_data.mathematical_wave_state = {"structures": tf_structures}
+
+        # Фильтруем только "свежие" паттерны (увеличили допуск до 7 последних экстремумов)
+        recent_extrema_ts = [round(float(e.timestamp)) for e in extrema[-7:]]
+        
         for s in tf_structures:
             last_ts = round(float(s.points[-1].timestamp))
-            is_recent = last_ts in recent_ts
+            is_recent = last_ts in recent_extrema_ts
             logger.info(f"  [MATH] Найден паттерн {s.pattern_type} ({tf}) {s.direction}, конфиденс: {s.confidence:.1f} | Fresh:{is_recent}")
             if is_recent:
                 # Добавляем базовый бонус сложности
@@ -150,7 +153,7 @@ def _convert_structure_to_plan(s: WaveStructure, context: LLMContext, tf: str, a
     """Превращает математическую структуру в торговый план с подтверждением входа."""
     
     # ── Направление сделки ──
-    is_reversal = s.pattern_type in ["Импульс", "Зигзаг", "Диагональ", "Плоскость"]
+    is_reversal = s.pattern_type in ["Импульс", "Зигзаг", "Диагональ", "Плоскость", "Двойной Зигзаг (W-X-Y)"]
     
     if is_reversal:
         direction = "SHORT" if s.direction == "БЫЧИЙ" else "LONG"
@@ -158,23 +161,69 @@ def _convert_structure_to_plan(s: WaveStructure, context: LLMContext, tf: str, a
         direction = "LONG" if s.direction == "БЫЧИЙ" else "SHORT"
     
     # ── ПУНКТ 2.А: Вход по подтверждению (ATR-учет) ──
+
+    # --- ФИЛЬТР ОБЪЕМА НА ПРОБОЕ (VSA) ---
+    # Проверяем недавние векторы паттерна. Если это Импульс, Волна 3 ДОЛЖНА иметь объем.
+    if s.pattern_type == "Импульс":
+        w3_vector = next((v for v in context.timeframes[0].vectors if v.start_time == s.points[2].timestamp), None)
+        if w3_vector and not (w3_vector.volume_anomaly or w3_vector.price_change_percent > 5):
+            # Если нет аномалии объема и движение вялое (<5%) — понижаем уверенность
+            s.confidence -= 20
+
     last_p = s.points[-1]
     prev_p = s.points[-2]
     
     offset = atr * 0.07 if atr > 0 else (prev_p.price * 0.0005)
+    ts_now = last_p.timestamp # Будем считать от последней точки паттерна
 
     if is_reversal:
-        sl = last_p.price
-        if direction == "LONG":
-            entry = prev_p.price + offset
+        sl = last_p.price # Стоп ВСЕГДА за вершину/низину последнего экстремума (C, 5, E)
+        
+        # Профессиональный вход по линии 2-4 для Импульсов и Диагоналей
+        if s.pattern_type in ["Импульс", "Диагональ"] and len(s.points) >= 5:
+            # Точки 2 (index 2) и 4 (index 4). В списке s.points: 0, 1, 2, 3, 4
+            p2 = s.points[2]
+            p4 = s.points[4]
+            if p4.timestamp != p2.timestamp:
+                k = (p4.price - p2.price) / (p4.timestamp - p2.timestamp)
+                b = p2.price - k * p2.timestamp
+                # Проекция времени: падение до линии займет ~50% времени формирования волны 4 (или среднего междупикового)
+                time_to_drop = (p4.timestamp - p2.timestamp) * 0.25
+                ts_projected = last_p.timestamp + time_to_drop
+                line_price = k * ts_projected + b
+                
+                # Если цена уже пробила линию - входим по рынку + offset
+                # Если нет - ждем пробоя линии
+                if direction == "LONG":
+                    entry = max(line_price, p4.price) + offset
+                else:
+                    entry = min(line_price, p4.price) - offset
+            else:
+                entry = prev_p.price + offset if direction == "LONG" else prev_p.price - offset
         else:
-            entry = prev_p.price - offset
+            # Для Зигзагов и Плоскостей - стандартный вход по пробою B
+            if direction == "LONG":
+                entry = prev_p.price + offset
+            else:
+                entry = prev_p.price - offset
     else:
-        sl = s.invalidation_price
-        if direction == "LONG":
-            entry = last_p.price + offset
+        # Для формирующихся структур 1-2-3 (Forming_123)
+        if s.pattern_type == "Forming_123":
+            # Вход на откате Фибо 0.5 от Волны 1-2-3 (где Волна 3 - последняя)
+            # Расстояние от P1 до P2
+            wave3_len = abs(s.points[2].price - s.points[1].price)
+            if direction == "LONG":
+                entry = s.points[2].price - wave3_len * 0.5
+                sl = s.points[0].price # Стоп под начало Волны 1
+            else:
+                entry = s.points[2].price + wave3_len * 0.5
+                sl = s.points[0].price
         else:
-            entry = last_p.price - offset
+            sl = s.invalidation_price
+            if direction == "LONG":
+                entry = last_p.price + offset
+            else:
+                entry = last_p.price - offset
 
     # Убедимся, что стоп не равен входу и находится с нужной стороны
     if not sl or sl == entry:

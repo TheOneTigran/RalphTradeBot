@@ -462,6 +462,7 @@ def _check_wxy_core(pts: List[Extremum]) -> bool:
     if not bullish and pY.price >= pW.price: return False
     return True
 
+
 def _check_impulse(
     pts: List[Extremum],
     timeframe: str,
@@ -470,181 +471,132 @@ def _check_impulse(
 ) -> Optional[WaveStructure]:
     """
     Проверяет 6 точек (0-1-2-3-4-5) на соответствие импульсу.
-    Правила Эллиотта:
-      1. Чередование направлений
-      2. Волна 2 НЕ заходит за начало 1
-      3. Волна 3 НЕ самая короткая (среди 1, 3, 5)
-      4. Волна 4 НЕ пересекает территорию волны 1
-      5. Волна 3 пробивает конец волны 1
-      6. ★ Волна 5 пробивает конец волны 3 (НОВОЕ)
-    + Объёмная валидация CVD
-    + Канал Эллиотта
-    + Фрактальная рекурсия
     """
     p0, p1, p2, p3, p4, p5 = pts
-
     bullish = p1.price > p0.price
-
-    # Чередование
-    if bullish:
-        if not (p1.price > p0.price and p2.price < p1.price and
-                p3.price > p2.price and p4.price < p3.price and
-                p5.price > p4.price):
-            return None
-        if p3.price <= p1.price: return None
-    else:
-        if not (p1.price < p0.price and p2.price > p1.price and
-                p3.price < p2.price and p4.price > p3.price and
-                p5.price < p4.price):
-            return None
-        if p3.price >= p1.price: return None
-
+    
+    # Длины волн
     len1 = abs(p1.price - p0.price)
     len2 = abs(p2.price - p1.price)
     len3 = abs(p3.price - p2.price)
     len4 = abs(p4.price - p3.price)
     len5 = abs(p5.price - p4.price)
+    
+    if len1 == 0 or len3 == 0 or len5 == 0: return None
 
-    # Правило 1: Волна 2 не заходит за начало 1
-    if bullish and p2.price <= p0.price:
-        return None
-    if not bullish and p2.price >= p0.price:
-        return None
+    # Временные интервалы
+    t0, t1, t2, t3, t4, t5 = [p.timestamp for p in pts]
+    dt1, dt2, dt3, dt4, dt5 = (t1-t0), (t2-t1), (t3-t2), (t4-t3), (t5-t4)
 
-    # Правило 2: Волна 3 не самая короткая
-    if len3 <= len1 and len3 <= len5:
-        return None
+    # ── ПРАВИЛА (Rules) - Нарушение = выход (None) ──────
+    # 1. Направление
+    if bullish:
+        if p1.price <= p0.price or p3.price <= p2.price or p5.price <= p4.price: return None
+        if p2.price >= p1.price or p4.price >= p3.price: return None
+    else:
+        if p1.price >= p0.price or p3.price >= p2.price or p5.price >= p4.price: return None
+        if p2.price <= p1.price or p4.price <= p3.price: return None
 
-    # Правило 3: Волна 4 не пересекает территорию волны 1
-    if bullish and p4.price <= p1.price:
-        return None
-    if not bullish and p4.price >= p1.price:
-        return None
-
-    # Правило 4: Волна 3 пробивает конец волны 1
-    if bullish and p3.price <= p1.price:
-        return None
-    if not bullish and p3.price >= p1.price:
-        return None
-
-    # ★ Правило 5 (НОВОЕ): Волна 5 ОБЯЗАНА пробить конец волны 3
-    if bullish and p5.price <= p3.price:
-        return None
-    if not bullish and p5.price >= p3.price:
-        return None
-
-    # ── Оценка уверенности ────────────
-    confidence = 50.0
-    details_parts = []
-
-    # Волна 3 длиннее 1.618 × Волна 1? (+20)
-    if len3 >= 1.618 * len1:
-        confidence += 20
-    elif len3 >= 1.0 * len1:
-        confidence += 10
-
-    # Чередование волн 2 и 4 (разная глубина)? (+10)
-    ratio2 = len2 / len1 if len1 > 0 else 0
-    ratio4 = len4 / len3 if len3 > 0 else 0
-    if abs(ratio2 - ratio4) > 0.15:
-        confidence += 10
-
-    # Волна 5 = 0.618-1.0 × Волна 1? (+10)
-    if len1 > 0 and 0.5 <= len5 / len1 <= 1.382:
-        confidence += 10
-
-    if len1:
-        details_parts.append(f"W1={len1:.2f}, W3={len3:.2f} ({len3/len1:.2f}×W1)")
-    details_parts.append(f"W5={len5:.2f} (W5>W3 ✓)")
-    details_parts.append(f"W2 откат={ratio2:.1%}, W4 откат={ratio4:.1%}")
-
-    # ── Объёмная валидация (CVD) ──────
-    if vectors:
-        vol_ok, vol_desc = _volume_validates_impulse(pts, vectors)
-        details_parts.append(vol_desc)
-        if vol_ok:
-            confidence += 5
-        else:
-            confidence -= 15  # Сильно снижаем — возможно это C, не 5
-
-    # ── ПРАВИЛА (Rules) - Если нарушены, это не импульс ────
-    # 1. Волна 2 не заходит за начало Волны 1
+    # 2. Волна 2 не заходит за начало Волны 1
     if bullish and p2.price <= p0.price: return None
     if not bullish and p2.price >= p0.price: return None
-    
-    # 2. Волна 3 не должна быть самой короткой (среди 1, 3, 5)
-    len1, len3, len5 = abs(p1.price-p0.price), abs(p3.price-p2.price), abs(p5.price-p4.price)
+
+    # 3. Волна 3 не самая короткая
     if len3 < len1 and len3 < len5: return None
-    
-    # 3. Волна 4 не заходит в территорию Волны 1 (для чистого импульса)
+
+    # 4. Волна 4 не заходит в территорию Волны 1
     if bullish and p4.price <= p1.price: return None
     if not bullish and p4.price >= p1.price: return None
-    
-    # 4. Волна 3 пробивает пик Волны 1
+
+    # 5. Волна 3 пробивает пик Волны 1
     if bullish and p3.price <= p1.price: return None
     if not bullish and p3.price >= p1.price: return None
 
-    # 5. Волна 5 пробивает пик Волны 3 (строгое правило V3)
+    # 6. Волна 5 пробивает пик Волны 3
     if bullish and p5.price <= p3.price: return None
     if not bullish and p5.price >= p3.price: return None
 
-    # ── НОРМЫ (Guidelines / Confidence) ────
-    confidence = 40.0 # База за прохождение Правил
+    # 7. Лимиты времени (10x)
+    if dt2 > dt1 * 10.0 or dt4 > dt3 * 10.0: return None
+
+    # ── НОРМЫ (Guidelines / Confidence) ──────
+    confidence = 40.0
     details_parts = []
 
-    # Фибо-пропорции (Норма)
+    # ГАРМОНИЯ ВРЕМЕНИ
+    ratio_dt42 = dt4 / dt2 if dt2 > 0 else 0
+    time_harmony_bonus = 0
+    if 0.382 <= ratio_dt42 <= 2.618: 
+        time_harmony_bonus += 10; details_parts.append("Гармония времени W2/W4")
+    elif ratio_dt42 > 4.0 or ratio_dt42 < 0.2:
+        time_harmony_bonus -= 10; details_parts.append("Нарушение временной гармонии")
+    confidence += time_harmony_bonus
+
+    # ФИБО-ПРОПОРЦИИ
     ratio3_1 = len3 / len1 if len1 > 0 else 0
-    if 1.618 <= ratio3_1 <= 2.618: confidence += 20; details_parts.append("W3 расширенная (Норма)")
-    elif 1.0 <= ratio3_1 < 1.618: confidence += 10; details_parts.append("W3 стандартная")
-    
-    ratio2_1 = abs(p2.price-p1.price) / len1 if len1 > 0 else 0
-    if 0.5 <= ratio2_1 <= 0.618: confidence += 10; details_parts.append("W2 глубокая коррекция (Норма)")
-    
-    # Чередование (Alternation) - Волна 2 (острая) vs Волна 4 (боковая)
-    # Здесь упрощенно: если W2 глубокая (>0.5), а W4 мелкая (<0.382) -> Бонус
-    ratio4_3 = abs(p4.price-p3.price) / len3 if len3 > 0 else 0
-    if ratio2_1 > 0.5 and ratio4_3 < 0.4: confidence += 15; details_parts.append("Чередование W2/W4 (Норма)")
+    if 1.618 <= ratio3_1 <= 2.618: 
+        confidence += 20; details_parts.append("W3 расширенная (Норма)")
+    elif 1.0 <= ratio3_1 < 1.618: 
+        confidence += 10; details_parts.append("W3 стандартная")
 
-    # Канал Эллиотта
-    channel_target = _calculate_elliott_channel(pts, bullish)
-    if channel_target:
-        confidence += 10
-        details_parts.append(f"Канал Эллиотта → цель W5 достигнута")
+    # ЧЕРЕДОВАНИЕ (Alternation)
+    ratio2_1 = len2 / len1 if len1 > 0 else 0
+    ratio4_3 = len4 / len3 if len3 > 0 else 0
+    is_w2_deep = ratio2_1 > 0.5
+    is_w4_deep = ratio4_3 > 0.4
+    if is_w2_deep != is_w4_deep:
+        confidence += 15; details_parts.append("Чередование глубины W2/W4")
+    if dt4 > dt2 * 1.5 or dt2 > dt4 * 1.5:
+        confidence += 10; details_parts.append("Чередование времени W2/W4")
 
-    # Цели после завершения импульса (Коррекция)
-    # После 5 волн ожидаем откат к 0.382, 0.5 или 0.618 всей длины (0-5)
-    total_len = abs(p5.price - p0.price)
-    fibo_targets = []
-    for f in [0.382, 0.618, 1.0, 1.618]:
-        target = p5.price - (total_len * f) if bullish else p5.price + (total_len * f)
-        fibo_targets.append(round(target, 2))
+    # VSA (Объём)
+    if vectors:
+        v3 = next((v for v in vectors if v.start_time == p2.timestamp and v.end_time == p3.timestamp), None)
+        if v3 and v3.volume_anomaly:
+            confidence += 15
+            details_parts.append("W3 подтверждена ОБЪЕМОМ")
 
-    # Фрактальная рекурсия (W3)
+    # ФРАКТАЛЬНАЯ ВАЛИДАЦИЯ
     if sub_tf_vectors:
         frac_adj, frac_desc = _fractal_validate_wave(p2.timestamp, p3.timestamp, sub_tf_vectors, "impulse")
-        confidence += frac_adj
-        details_parts.append(frac_desc)
+        if frac_adj > 0:
+            confidence += 15; details_parts.append(f"ФРАКТАЛЬНОЕ ПОДТВЕРЖДЕНИЕ W3: {frac_desc}")
+        else:
+            confidence -= 10; details_parts.append(f"СЛАБОЕ СУБ-СТРУКТУРНОЕ ПОДТВЕРЖДЕНИЕ: {frac_desc}")
+
+    # RSI Дивергенция
+    v3 = next((v for v in vectors if v.start_time == p2.timestamp and v.end_time == p3.timestamp), None)
+    v5 = next((v for v in vectors if v.start_time == p4.timestamp and v.end_time == p5.timestamp), None)
+    if v3 and v5 and hasattr(v3, 'rsi_at_end') and hasattr(v5, 'rsi_at_end'):
+        if (bullish and p5.price > p3.price and v5.rsi_at_end < v3.rsi_at_end) or \
+           (not bullish and p5.price < p3.price and v5.rsi_at_end > v3.rsi_at_end):
+            confidence += 15; details_parts.append("Найдена дивергенция RSI (W3 vs W5)")
 
     direction = "БЫЧИЙ" if bullish else "МЕДВЕЖИЙ"
     labels = _get_labels(timeframe, "impulse")
-    inv_price = p0.price # Для импульса инвалидация - начало W1
+    inv_price = p0.price
     
-    wave_points = [
-        WavePoint(label=labels[i], price=pts[i].price, timestamp=pts[i].timestamp)
-        for i in range(6)
-    ]
-
+    # Уровни входа/стопа/тейка для ТрейдПлана
+    total_len = abs(p5.price - p0.price)
+    tp_target = p5.price + (total_len * 0.618) if bullish else p5.price - (total_len * 0.618)
+    # entry_level = p3.price if bullish else p3.price # Упрощенно
+    
     return WaveStructure(
-        pattern_type="Импульс",
+        pattern_type="Импульс (" + timeframe + ")",
+        points=[
+            WavePoint(p0.price, p0.timestamp, labels[0]),
+            WavePoint(p1.price, p1.timestamp, labels[1]),
+            WavePoint(p2.price, p2.timestamp, labels[2]),
+            WavePoint(p3.price, p3.timestamp, labels[3]),
+            WavePoint(p4.price, p4.timestamp, labels[4]),
+            WavePoint(p5.price, p5.timestamp, labels[5]),
+        ],
         direction=direction,
-        points=wave_points,
-        confidence=min(confidence, 100),
-        details=", ".join(d for d in details_parts if d),
-        channel_target=channel_target,
-        fibo_targets=fibo_targets,
-        invalidation_price=round(inv_price, 2),
+        confidence=min(100.0, max(0.0, confidence)),
+        details=" -> ".join(details_parts),
+        fibo_targets=[round(tp_target, 2)],
+        invalidation_price=inv_price
     )
-
 
 def _check_diagonal(
     pts: List[Extremum],
@@ -848,7 +800,7 @@ def _check_flat(pts: List[Extremum], timeframe: str) -> Optional[WaveStructure]:
     direction = "БЫЧИЙ" if bullish else "МЕДВЕЖИЙ"
     subtype = "Расширенная" if ratioB > 1.05 else "Обычная"
     labels = _get_labels(timeframe, "correction")
-    inv_price = p0.price if ratioB <= 1.0 else pB.price
+    inv_price = pC.price
 
     # Цели: возврат к началу импульса
     fibo_targets = [round(p0.price, 2)]
@@ -887,7 +839,8 @@ def _check_wxy(pts: List[Extremum], timeframe: str) -> Optional[WaveStructure]:
     lenX = abs(pX.price - pW.price)
     lenY = abs(pY.price - pX.price)
 
-    if lenX >= lenW:
+    ratioX = lenX / lenW if lenW > 0 else 0
+    if ratioX > 1.382:
         return None
     if bullish and pY.price <= pW.price:
         return None

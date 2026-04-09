@@ -1,235 +1,304 @@
 """
-main.py — Точка входа RalphTradeBot V2.
+main.py — Единая точка входа RalphTradeBot V3.
 
-Запуск:
-    python main.py
-    python main.py --symbols BTCUSDT ETHUSDT --timeframes 1d 4h 1h
-    python main.py --no-critic    # пропустить Self-Correction (быстрее)
-    python main.py --no-oi        # пропустить загрузку Open Interest
-
-Пайплайн:
-  1. data_fetcher      → OHLCV + стакан + OI + Funding Rate
-  2. math_preprocessor → ATR-Fractal свинги, Fib-кластеры, AO, OI-дивергенция
-  3. ai_prompt_builder → JSON + промпт для LLM Actor
-  4. Actor LLM         → генерирует черновой TradePlan
-  5. Critic LLM        → проверяет план на нарушения 89WAVES
-  6. (optional) Actor  → исправляет план по замечаниям Критика
-  7. trading_plan_gen  → парсит, форматирует, сохраняет отчёт
+Режимы запуска:
+  python main.py --mode live     : Real-time анализ (WS + DAG + Signals)
+  python main.py --mode backtest : Прогон по историческим данным
+  python main.py --mode train    : Обучение ML-модели на HITL-разметке
+  python main.py --mode label    : Запуск Streamlit HITL Dashboard
+  python main.py --mode fetch    : Загрузка исторических данных в DuckDB
 """
 from __future__ import annotations
 
-import sys
-import os
-# Добавляем корень проекта в пути поиска модулей
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-if "src" not in os.listdir(os.getcwd()) and "src" in os.listdir(os.path.dirname(os.path.abspath(__file__))):
-    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-else:
-    sys.path.append(os.getcwd())
-
 import argparse
-import json
+import asyncio
 import logging
 import sys
-import os
-from datetime import datetime
 
-from openai import OpenAI
+import numpy as np
 
-from src.core.config import (
-    OPENAI_API_KEY,
-    OPENAI_BASE_URL,
-    OPENAI_MODEL,
-    SYMBOLS,
-    TIMEFRAMES,
-)
-from src.core.exceptions import WaveEngineError, PlanParsingError
-from src.core.models import CriticFeedback, TradePlan
-from src.fetcher.data_fetcher import (
-    fetch_all_timeframes,
-    fetch_orderbook_walls,
-    fetch_open_interest,
-)
-from src.math_engine.math_preprocessor import preprocess_all
-from src.ai.ai_prompt_builder import build_messages
-from src.ai.critic_prompt import build_critic_messages, build_correction_messages
-from src.trader.trading_plan_generator import parse_llm_response, format_plan_for_user
-from src.visualizer.chart_generator import generate_chart
-from src.validator.hard_validator import validate_plan as hard_validate_plan
-
-# ─── Логирование ─────────────────────────────────────────────────────────────
+from src.core.config import SYMBOLS, TIMEFRAMES, CANDLE_LIMIT
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(name)s │ %(message)s",
-    datefmt="%H:%M:%S",
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
-logger = logging.getLogger("main")
-
-# ─── LLM клиент ──────────────────────────────────────────────────────────────
-
-# ─── LLM и Pipeline импортируются из src.core.pipeline ─────────────
-from src.core.pipeline import run_full_ai_pipeline, build_context_summary
+logger = logging.getLogger("ralph")
 
 
-# ─── Основная функция анализа ─────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# MODE: FETCH — Загрузка исторических данных в DuckDB
+# ═════════════════════════════════════════════════════════════════════════════
 
-def analyze_symbol(
-    symbol: str,
-    timeframes: list[str],
-    use_critic: bool = True,
-    use_oi: bool = True,
-) -> None:
-    """
-    Полный цикл анализа для одной торговой пары.
-    Включает: Actor LLM → Critic → (Correction) → отчёт.
+def run_fetch(symbols: list[str], timeframes: list[str]):
+    """Загружает OHLCV с биржи и сохраняет в DuckDB."""
+    from src.fetcher.data_fetcher import fetch_ohlcv
+    from src.storage.duckdb_store import get_store
 
-    Args:
-        symbol:     Торговая пара (например BTCUSDT).
-        timeframes: Список таймфреймов от старшего к младшему.
-        use_critic: Запускать ли Self-Correction (Critic) проход.
-        use_oi:     Загружать ли данные Open Interest.
-    """
-    print(f"\n{'═' * 60}")
-    print(f"  🔍 Анализирую {symbol}...")
-    print(f"{'═' * 60}")
-
-    # ── 1. Загрузка данных ────────────────────────────────────────────────
-    logger.info("[1/5] Загрузка рыночных данных с Bybit...")
-    all_candles = fetch_all_timeframes(symbol)
-    orderbook_walls = fetch_orderbook_walls(symbol)
-
-    # Open Interest (необязательный)
-    oi_snapshot = None
-    if use_oi:
-        logger.info("[+OI] Загрузка Open Interest...")
-        oi_snapshot = fetch_open_interest(symbol, period="1d", limit=30)
-
-    # ── 2. Математическая обработка ──────────────────────────────────────
-    logger.info("[2/5] ATR-Fractal обработка (свинги, Fib-кластеры, AO)...")
-    context = preprocess_all(
-        symbol=symbol,
-        all_candles=all_candles,
-        timeframes=timeframes,
-        orderbook_walls=orderbook_walls,
-    )
-
-    # Прикрепляем OI к младшему ТФ (самый свежий контекст)
-    if oi_snapshot and context.timeframes:
-        context.timeframes[-1].oi_data = oi_snapshot
-
-    # OI-дивергенция: если OI и цена движутся в разные стороны
-    if oi_snapshot and oi_snapshot.oi_change_pct_24h is not None:
-        last_tf = context.timeframes[-1]
-        if last_tf.vectors:
-            last_vec = last_tf.vectors[-1]
-            price_up = last_vec.is_bullish
-            oi_up = oi_snapshot.oi_change_pct_24h > 0
-            oi_snapshot.oi_price_divergence = price_up != oi_up
-
-    # Сериализуем контекст один раз (нужен для Correction-шага)
-    market_data_json = context.model_dump_json(indent=2)
-
-    # ── 3. Actor/Critic/Correction AI Pipeline ───────────────────────────
-    from src.core.pipeline import run_full_ai_pipeline
-    
-    logger.info("[3/5] Запуск AI Пайплайна (Actor + Self-Healing)...")
-    plan = run_full_ai_pipeline(context, use_critic=use_critic)
-
-    # ── Вывод и сохранение ────────────────────────────────────────────────
-    formatted_plan = format_plan_for_user(plan, symbol)
-    print(formatted_plan)
-    
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    # Используем "" вместо llm_text, так как пайплайн возвращает уже распарсенный объект
-    _save_report(symbol, formatted_plan, "", timestamp, plan)
-
-    # ── 6. Визуализация (Phase 4) ─────────────────────────────────────────
-    logger.info("[6/6] Генерация графиков...")
-    reports_dir = "reports"
-    os.makedirs(reports_dir, exist_ok=True)
-    
-    # Строим графики для ВСЕХ анализируемых ТФ
-    tfs_to_plot = timeframes
-    
-    for tf in tfs_to_plot:
-        tf_data = next((t for t in context.timeframes if t.timeframe == tf), None)
-        if tf_data:
-            chart_path = os.path.join(reports_dir, f"{symbol}_{tf}_chart_{timestamp}.png")
-            generate_chart(
-                symbol=symbol,
-                timeframe=tf,
-                candles=all_candles.get(tf, []),
-                vectors=tf_data.vectors,
-                fib_clusters=tf_data.fib_clusters,
-                save_path=chart_path,
-                plan=plan
-            )
+    store = get_store()
+    for symbol in symbols:
+        for tf in timeframes:
+            try:
+                candles = fetch_ohlcv(symbol, tf, limit=CANDLE_LIMIT)
+                n = store.upsert_ohlcv(symbol, tf, candles)
+                logger.info("Saved %d candles: %s [%s]", n, symbol, tf)
+            except Exception as e:
+                logger.error("Failed to fetch %s [%s]: %s", symbol, tf, e)
+    store.close()
 
 
-# ─── Сохранение отчётов ──────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# MODE: BACKTEST — Offline анализ по историческим данным
+# ═════════════════════════════════════════════════════════════════════════════
 
-def _save_report(
-    symbol: str,
-    text_plan: str,
-    raw_llm: str,
-    timestamp: str,
-    plan: TradePlan | None = None,
-) -> None:
-    """Сохраняет отчёт в .txt и .json (расширенный с метаданными плана)."""
-    reports_dir = "reports"
-    os.makedirs(reports_dir, exist_ok=True)
+def run_backtest(symbol: str, timeframe: str):
+    """Прогоняет Wave Engine + ML + Execution по историческим данным."""
+    from src.storage.duckdb_store import get_store
+    from src.wave_engine.extremum_finder import ExtremumFinder
+    from src.wave_engine.hypothesis_dag import HypothesisDAG
+    from src.confluence.feature_extractor import FeatureExtractor
+    from src.confluence.ml_scorer import MLScorer
+    from src.confluence.signal_filter import SignalFilter
+    from src.execution.report_generator import ReportGenerator
+    from src.ingestion.liquidity_mapper import LiquidityMapper
 
-    txt_path = os.path.join(reports_dir, f"{symbol}_plan_{timestamp}.txt")
-    with open(txt_path, "w", encoding="utf-8") as f:
-        f.write(text_plan)
+    store = get_store()
+    candles = store.get_ohlcv(symbol, timeframe)
+    if not candles:
+        logger.error("No data for %s [%s]. Run --mode fetch first.", symbol, timeframe)
+        return
 
-    # JSON: сырой ответ Actor + метаданные плана
-    json_path = os.path.join(reports_dir, f"{symbol}_raw_{timestamp}.json")
-    json_payload: dict = {"raw_llm_response": raw_llm}
-    if plan:
-        json_payload["parsed_plan"] = plan.model_dump()
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(json_payload, f, ensure_ascii=False, indent=2)
+    high = np.array([c["high"] for c in candles])
+    low = np.array([c["low"] for c in candles])
+    close = np.array([c["close"] for c in candles])
+    timestamps = np.array([c["ts"] for c in candles])
 
-    logger.info("Отчеты сохранены:\n - %s\n - %s", txt_path, json_path)
+    logger.info("Backtest: %s [%s], %d candles", symbol, timeframe, len(candles))
+
+    # 1. Extrema
+    finder = ExtremumFinder(mode="single")
+    from src.core.config import ATR_FRACTAL_SETTINGS
+    settings = ATR_FRACTAL_SETTINGS.get(timeframe, {"fractal_n": 2, "atr_mult": 1.5, "atr_period": 14})
+    extrema = finder.find(high, low, close, timestamps, **settings)
+    logger.info("Found %d extrema", len(extrema))
+
+    # 2. Liquidity Map
+    liq = LiquidityMapper(symbol, timeframe)
+    liq.build_from_history(high, low, close, timestamps)
+
+    # 3. DAG
+    dag = HypothesisDAG()
+    for ext in extrema:
+        dag.ingest_extremum(ext)
+
+    top = dag.get_top_hypotheses(5)
+    completed = dag.completed_hypotheses
+    logger.info("DAG: %d active, %d completed", len(dag.active_hypotheses), len(completed))
+
+    # 4. Score top hypotheses
+    scorer = MLScorer()
+    sf = SignalFilter(threshold=0.60)
+    rg = ReportGenerator()
+
+    signals = []
+    for hyp in (completed[-10:] + top):
+        features = FeatureExtractor.extract_features(hyp)
+        prob = scorer.predict_proba(features)
+
+        signal = sf.evaluate(symbol, hyp, features, prob)
+        if signal:
+            msg = rg.format_telegram_message(signal)
+            signals.append(msg)
+            print("\n" + "=" * 60)
+            print(msg)
+            print("=" * 60)
+
+    logger.info("Backtest complete. Generated %d signals.", len(signals))
+    store.close()
 
 
-# ─── CLI ─────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# MODE: LIVE — Real-time WS streaming + DAG + Signals
+# ═════════════════════════════════════════════════════════════════════════════
 
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="RalphTradeBot V2 — Elliott Wave анализ на базе LLM + Self-Correction"
-    )
-    parser.add_argument("--symbols",  nargs="+", default=SYMBOLS,     help="Торговые пары")
-    parser.add_argument("--timeframes", nargs="+", default=TIMEFRAMES, help="Таймфреймы")
-    parser.add_argument("--no-critic", action="store_true", help="Отключить Self-Correction (Critic)")
-    parser.add_argument("--no-oi",     action="store_true", help="Отключить загрузку Open Interest")
-    return parser.parse_args()
+async def run_live(symbol: str, timeframes_list: list[str]):
+    """Real-time режим: WS → ClusterBuilder → LiquidityMapper → DAG → Signals."""
+    from src.events.bus import get_event_bus
+    from src.events.models import EventType, NewCandleEvent
+    from src.ingestion.ws_streamer import WSStreamer
+    from src.ingestion.cluster_builder import ClusterBuilder
+    from src.ingestion.liquidity_mapper import LiquidityMapper
+    from src.ingestion.sniper_trigger import SniperTrigger
+    from src.wave_engine.extremum_finder import ExtremumFinder
+    from src.wave_engine.hypothesis_dag import HypothesisDAG
+    from src.confluence.feature_extractor import FeatureExtractor
+    from src.confluence.ml_scorer import MLScorer
+    from src.confluence.signal_filter import SignalFilter
+    from src.execution.report_generator import ReportGenerator
+    from src.storage.duckdb_store import get_store
+
+    bus = get_event_bus()
+    store = get_store()
+
+    # Components
+    primary_tf = timeframes_list[0] if timeframes_list else "1h"
+    streamer = WSStreamer(symbol, timeframes_list)
+    cluster = ClusterBuilder(symbol, primary_tf, tick_size=0.01)
+    liq_mapper = LiquidityMapper(symbol, primary_tf)
+    sniper = SniperTrigger()
+    dag = HypothesisDAG()
+    finder = ExtremumFinder(mode="single")
+    scorer = MLScorer()
+    sf = SignalFilter()
+    rg = ReportGenerator()
+
+    # Preload history for liquidity map
+    candles = store.get_ohlcv(symbol, primary_tf)
+    if candles:
+        high = np.array([c["high"] for c in candles])
+        low = np.array([c["low"] for c in candles])
+        close = np.array([c["close"] for c in candles])
+        ts = np.array([c["ts"] for c in candles])
+        liq_mapper.build_from_history(high, low, close, ts)
+        logger.info("Preloaded %d historical candles for liquidity map", len(candles))
+
+    # Wire up events
+    async def on_candle(event: NewCandleEvent):
+        if event.timeframe != primary_tf:
+            return
+
+        # Store candle
+        store.upsert_ohlcv(event.symbol, event.timeframe, [{
+            "ts": event.ts, "open": event.open, "high": event.high,
+            "low": event.low, "close": event.close, "volume": event.volume,
+        }])
+
+        # Liquidity check
+        liq_result = liq_mapper.on_new_candle({
+            "ts": event.ts, "open": event.open, "high": event.high,
+            "low": event.low, "close": event.close, "volume": event.volume,
+        })
+
+        # Sniper reset (new candle = reset sticky states)
+        sniper.reset_candle_state(event.symbol)
+
+        # Re-run extremum detection on latest data
+        all_candles = store.get_ohlcv(event.symbol, event.timeframe)
+        if len(all_candles) < 30:
+            return
+
+        h = np.array([c["high"] for c in all_candles[-200:]])
+        l = np.array([c["low"] for c in all_candles[-200:]])
+        c = np.array([c["close"] for c in all_candles[-200:]])
+        t = np.array([c_["ts"] for c_ in all_candles[-200:]])
+
+        from src.core.config import ATR_FRACTAL_SETTINGS
+        settings = ATR_FRACTAL_SETTINGS.get(event.timeframe, {})
+        extrema = finder.find(h, l, c, t, **settings)
+
+        # Feed last extremum to DAG
+        if extrema:
+            dag.ingest_extremum(extrema[-1])
+
+        # Score top hypothesis
+        top = dag.get_top_hypotheses(1)
+        if top:
+            hyp = top[0]
+            context = {
+                "cluster_volume_zscore": cluster.get_context_for_ml().get("cluster_volume_zscore", 0),
+                "liquidity_sweep": liq_result.get("liquidity_sweep", 0),
+            }
+            features = FeatureExtractor.extract_features(hyp, context)
+            prob = scorer.predict_proba(features)
+            signal = sf.evaluate(event.symbol, hyp, features, prob)
+
+            if signal:
+                msg = rg.format_telegram_message(signal)
+                logger.info("SIGNAL GENERATED:\n%s", msg)
+                rg.send_telegram_alert(msg)
+
+    bus.subscribe(EventType.NEW_CANDLE, on_candle)
+
+    # Start
+    await bus.start()
+    await cluster.start(streamer.trade_queue)
+    await streamer.start()
+
+    logger.info("=== RalphTradeBot V3 LIVE mode started ===")
+    logger.info("Symbol: %s | TFs: %s | Primary: %s", symbol, timeframes_list, primary_tf)
+
+    try:
+        while True:
+            await asyncio.sleep(60)
+            logger.info("Heartbeat | Streamer: %s | DAG active: %d",
+                       streamer.stats, len(dag.active_hypotheses))
+    except KeyboardInterrupt:
+        logger.info("Shutting down...")
+    finally:
+        await streamer.stop()
+        await cluster.stop()
+        await bus.stop()
+        store.close()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# MODE: TRAIN — Обучение ML модели
+# ═════════════════════════════════════════════════════════════════════════════
+
+def run_train():
+    """Запускает пайплайн обучения ML-модели на HITL-разметке."""
+    from src.confluence.training_pipeline import train_model
+    success = train_model()
+    if success:
+        logger.info("Model training complete.")
+    else:
+        logger.warning("Training skipped (insufficient data).")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# MODE: LABEL — Streamlit HITL Dashboard
+# ═════════════════════════════════════════════════════════════════════════════
+
+def run_label():
+    """Запускает Streamlit dashboard для HITL разметки."""
+    import subprocess
+    app_path = "src/labeling/app.py"
+    logger.info("Launching HITL Dashboard: streamlit run %s", app_path)
+    subprocess.run([sys.executable, "-m", "streamlit", "run", app_path], check=True)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# CLI
+# ═════════════════════════════════════════════════════════════════════════════
+
+def main():
+    parser = argparse.ArgumentParser(description="RalphTradeBot V3 — Elliott Wave Engine")
+    parser.add_argument("--mode", choices=["live", "backtest", "train", "label", "fetch"],
+                        default="backtest", help="Режим работы")
+    parser.add_argument("--symbol", default=SYMBOLS[0], help="Торговая пара (default: BTCUSDT)")
+    parser.add_argument("--timeframe", default="1h", help="Основной таймфрейм (default: 1h)")
+
+    args = parser.parse_args()
+
+    logger.info("RalphTradeBot V3 | Mode: %s | Symbol: %s | TF: %s",
+                args.mode, args.symbol, args.timeframe)
+
+    if args.mode == "fetch":
+        run_fetch([args.symbol], TIMEFRAMES)
+
+    elif args.mode == "backtest":
+        run_backtest(args.symbol, args.timeframe)
+
+    elif args.mode == "live":
+        asyncio.run(run_live(args.symbol, TIMEFRAMES))
+
+    elif args.mode == "train":
+        run_train()
+
+    elif args.mode == "label":
+        run_label()
 
 
 if __name__ == "__main__":
-    args = _parse_args()
-
-    symbols: list[str]    = args.symbols
-    timeframes: list[str] = args.timeframes
-    use_critic: bool      = not args.no_critic
-    use_oi: bool          = not args.no_oi
-
-    logger.info(
-        "Старт RalphTradeBot V2 | Монеты: %s | ТФ: %s | Critic: %s | OI: %s",
-        ", ".join(symbols), ", ".join(timeframes),
-        "ВКЛ" if use_critic else "ВЫКЛ",
-        "ВКЛ" if use_oi else "ВЫКЛ",
-    )
-
-    for symbol in symbols:
-        try:
-            analyze_symbol(symbol, timeframes, use_critic=use_critic, use_oi=use_oi)
-        except WaveEngineError as e:
-            logger.error("Ошибка анализа %s: %s", symbol, e)
-        except KeyboardInterrupt:
-            logger.info("Прервано пользователем.")
-            break
-
-    print("\n✅ Анализ завершён.")
+    main()

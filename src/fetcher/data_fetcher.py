@@ -55,12 +55,12 @@ def fetch_ohlcv(
     limit: int = CANDLE_LIMIT,
 ) -> list[dict]:
     """
-    Выкачивает историю OHLCV с Bybit для заданного таймфрейма.
+    Выкачивает историю OHLCV с Bybit для заданного таймфрейма (с пагинацией).
 
     Args:
         symbol:    Торговая пара, например 'BTCUSDT'.
         timeframe: Таймфрейм (1w / 1d / 4h / 1h / 15m / 5m).
-        limit:     Количество свечей.
+        limit:     Нужное количество свечей. Если limit > 1000, будет пагинация.
 
     Returns:
         Список словарей: [{ 'ts', 'open', 'high', 'low', 'close', 'volume' }]
@@ -70,13 +70,56 @@ def fetch_ohlcv(
     if tf is None:
         raise DataFetchError(f"Неизвестный таймфрейм: {timeframe}")
 
+    all_raw = []
+    # Bybit max limit per request is 1000
+    batch_size = 1000
+    
+    # Calculate starting 'since' timestamp by estimating from the limit
+    # This is a rough estimation, ccxt provides an easier way using end_time 
+    # but ccxt Bybit implementation paginates smoothly moving forward from 'since'.
+    # To fetch recent N candles best, we first fetch latest to get current time,
+    # then calculate 'since' strictly based on timeframe seconds.
+    tf_seconds = exchange.parse_timeframe(tf)
+    
     try:
         logger.info("Загрузка %s свечей [%s] для %s...", limit, tf, symbol)
-        raw = exchange.fetch_ohlcv(symbol, tf, limit=limit)
+        latest = exchange.fetch_ohlcv(symbol, tf, limit=1)
+        if not latest:
+            return []
+        
+        last_ts = latest[0][0]
+        # Start ts:
+        start_ts = last_ts - (limit * tf_seconds * 1000)
+        
+        since = start_ts
+        while len(all_raw) < limit:
+            remaining = limit - len(all_raw)
+            fetch_limit = min(batch_size, remaining)
+            
+            batch = exchange.fetch_ohlcv(symbol, tf, since=since, limit=fetch_limit)
+            if not batch:
+                break
+                
+            all_raw.extend(batch)
+            since = batch[-1][0] + (tf_seconds * 1000)
+            
+            if len(batch) < fetch_limit:
+                # No more data
+                break
+            
+            time.sleep(0.2) # Rate limit respect
+            
     except ccxt.NetworkError as e:
         raise DataFetchError(f"Ошибка сети при загрузке OHLCV: {e}") from e
     except ccxt.ExchangeError as e:
         raise DataFetchError(f"Ошибка биржи при загрузке OHLCV: {e}") from e
+
+    # ccxt might give duplicates if 'since' overlaps, so deduplicate
+    unique_candles = {c[0]: c for c in all_raw}
+    sorted_raw = sorted(unique_candles.values(), key=lambda x: x[0])
+    
+    # Ensure we don't return more than requested
+    sorted_raw = sorted_raw[-limit:]
 
     candles = [
         {
@@ -87,7 +130,7 @@ def fetch_ohlcv(
             "close": float(c[4]),
             "volume": float(c[5]),
         }
-        for c in raw
+        for c in sorted_raw
     ]
     logger.info("Получено %d свечей [%s] для %s.", len(candles), tf, symbol)
     return candles

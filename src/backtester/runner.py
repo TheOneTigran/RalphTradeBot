@@ -22,8 +22,9 @@ from src.backtester.evaluator import evaluate_plan, BacktestResult
 from src.core.pipeline import run_full_ai_pipeline, run_math_pipeline
 from src.math_engine.math_preprocessor import preprocess_all
 from src.core.models import LLMContext
-from src.core.config import CANDLE_LIMIT, INITIAL_DEPOSIT, RISK_PER_TRADE_PERCENT, MIN_RR_RATIO, EXCHANGE_FEE
+from src.core.config import MAX_LEVERAGE,  CANDLE_LIMIT, INITIAL_DEPOSIT, RISK_PER_TRADE_PERCENT, MIN_RR_RATIO, EXCHANGE_FEE
 from src.validator.hard_validator import validate_plan as hard_validate_plan
+from src.utils.visualizer import plot_wave_structure
 
 # Настройка логирования для бэктеста (более компактная)
 logging.basicConfig(
@@ -149,10 +150,14 @@ def run_backtest(
                 plan = run_math_pipeline(context, use_ai_confirm=False)
             else:
                 plan = run_full_ai_pipeline(context, use_critic=use_critic)
-            
+
+            # 2. Hard-валидация уровней и R:R
+            if not hard_validate_plan(plan):
+                continue
+
             direction = str(plan.trade_params.get("direction", "")).upper()
             if not direction: continue
-            
+
             if "WAIT" in direction:
                 if plan.wave_count_label == "RR Filtered":
                     # Логируем отсеянный по RR паттерн
@@ -171,12 +176,6 @@ def run_backtest(
                         "reasoning": plan.detailed_logic[:200]
                     })
                 continue
-                
-            # --- ОБЯЗАТЕЛЬНАЯ ВАЛИДАЦИЯ ---
-            hard_errors = hard_validate_plan(plan)
-            if hard_errors:
-                logger.warning(f"  ↪ Пропуск: План не прошел валидацию: {hard_errors[0]}")
-                continue
 
             entry_p = _extract_price(plan.trigger_prices.get("confirmation_level")) or _extract_price(plan.trigger_prices.get("entry_zone"))
             sl_p = _extract_price(plan.trade_params.get("stop_loss"))
@@ -187,11 +186,28 @@ def run_backtest(
             pattern_key = f"{direction}_{entry_p:.1f}_{sl_p:.1f}_{tp1_p:.1f}"
             if pattern_key in traded_patterns:
                 continue
-            
+
             logger.info(f"  🎯 СИГНАЛ: {direction} | Entry: {entry_p:.2f} | TP: {tp1_p:.2f} | SL: {sl_p:.2f}")
-            
+
             # Проверка исполнения (смотрим на будущие 1000 свечей младшего ТФ)
             future = machines[base_tf].get_future_candles(ts, limit=1000)
+
+            # --- ВИЗУАЛИЗАЦИЯ ---
+            try:
+                found_s = None
+                for tf_data in context.timeframes:
+                    state = tf_data.mathematical_wave_state
+                    if state and isinstance(state, dict) and state.get('structures'):
+                        found_s = state['structures'][0]
+                        break
+
+                if found_s:
+                    tf_candles = machines[base_tf].get_snapshot(ts)
+                    print(f"DEBUG: Plotting {found_s.pattern_type} for {symbol}")
+                    plot_wave_structure(symbol, f"Structure_{found_s.pattern_type}_{base_tf}", tf_candles, found_s)
+            except Exception as plot_e:
+                logger.warning(f"Ошибка при попытке визуализации: {plot_e}")
+
             outcome = evaluate_plan(plan, future)
             
             # Блокируем время в зависимости от исхода
@@ -219,10 +235,16 @@ def run_backtest(
                 stop_pct = (risk_dist / entry_p) * 100
                 risk_amount = (current_balance * (RISK_PER_TRADE_PERCENT / 100)) if current_balance > 0 else 0
                 pos_size_usd = (risk_amount / (stop_pct / 100)) if stop_pct > 0 else 0
+                
+                # КЭП ПО ПЛЕЧУ: Не более 3x от баланса
+                max_pos = current_balance * 3.0
+                if pos_size_usd > max_pos:
+                    pos_size_usd = max_pos
+                    
                 leverage = (pos_size_usd / current_balance) if current_balance > 0 else 0
                 
                 # Комиссия (вход + выход)
-                if outcome.status in ["PROFIT", "LOSS"]:
+                if outcome.status in ["PROFIT", "LOSS", "EXPIRED"]:
                     fee_total_usd = pos_size_usd * (EXCHANGE_FEE / 100) * 2
                     pnl_usd = (pos_size_usd * (outcome.pnl_pct / 100)) - fee_total_usd
                 else: 
