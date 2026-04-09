@@ -11,6 +11,9 @@ import os
 import sys
 import time
 import uuid
+import logging
+
+logger = logging.getLogger(__name__)
 
 import ccxt
 import numpy as np
@@ -169,22 +172,20 @@ db = get_db()
 @st.cache_data(ttl=3600)
 def fetch_ohlcv_safe(symbol: str, timeframe: str, limit: int = 2000):
     """
-    Загружает OHLCV с Bybit с паузами.
-    Streamlit Cloud заблокирован на Binance (US IP), поэтому используем Bybit.
-    Лимит батча Bybit — строго 200 свечей, иначе Rate Limit.
+    Загружает OHLCV с Binance US с паузами.
+    Streamlit Cloud хостится в США, поэтому Bybit и обычный Binance 
+    возвращают ExchangeNotAvailable/AccessDenied. BinanceUS работает отлично.
     """
-    exchange = ccxt.bybit({
+    exchange = ccxt.binanceus({
         "enableRateLimit": True,
-        "rateLimit": 500,
-        "options": {"defaultType": "linear"},
+        "rateLimit": 250,
     })
     tf_sec = exchange.parse_timeframe(timeframe)
-    batch_size = 200  # Bybit strict chunk size
+    batch_size = 500  # BinanceUS allows 500
     all_raw = []
 
-    # Ccxt sometimes needs /USDT format depending on version, 
-    # but Bybit linear accepts standard. We'll use ccxt standard.
-    ccxt_symbol = symbol.replace("USDT", "/USDT:USDT") if "USDT" in symbol else symbol
+    # Binance / BinanceUS expects 'BTC/USDT'
+    ccxt_symbol = symbol.replace("USDT", "/USDT") if "USDT" in symbol else symbol
 
     try:
         latest = exchange.fetch_ohlcv(ccxt_symbol, timeframe, limit=1)
@@ -206,6 +207,7 @@ def fetch_ohlcv_safe(symbol: str, timeframe: str, limit: int = 2000):
 
     except Exception as e:
         logger.error(f"Fetch Error: {e}")
+        st.error(f"Ошибка получения данных с биржи: {e}")
         if not all_raw:
             return []
         # Возвращаем что успели загрузить
@@ -298,10 +300,10 @@ with st.sidebar:
         if not reviewer.strip() or reviewer.strip().lower() == "anonymous":
             st.error("⚠️ Пожалуйста, введите ваше имя (ник) перед загрузкой!")
         else:
-            with st.spinner(f"Загрузка {symbol} {timeframe} с Bybit (может занять 5-10 сек)..."):
+            with st.spinner(f"Загрузка {symbol} {timeframe} с BinanceUS (US-IP Safe)..."):
                 candles = fetch_ohlcv_safe(symbol, timeframe, limit=2000)
             if not candles:
-                st.error("Не удалось загрузить историю. Попробуй позже (Bybit rate limit).")
+                st.error("Не удалось загрузить историю. Биржа отклонила запрос.")
             else:
                 with st.spinner(f"Wave Engine анализирует {len(candles)} свечей..."):
                     n = build_queue(symbol, timeframe, candles)
