@@ -169,16 +169,15 @@ db = get_db()
 @st.cache_data(ttl=3600)
 def fetch_ohlcv_safe(symbol: str, timeframe: str, limit: int = 2000):
     """
-    Загружает OHLCV с Bybit с паузами между батчами.
-    Limit урезан до 2000 (≈8 запросов по 250) — Bybit не банит.
+    Загружает OHLCV с Binance с паузами между батчами.
     """
-    exchange = ccxt.bybit({
+    exchange = ccxt.binance({
         "enableRateLimit": True,
-        "rateLimit": 500,          # ms между запросами
-        "options": {"defaultType": "linear"},
+        "rateLimit": 250,          # ms между запросами (Binance)
+        "options": {"defaultType": "spot"},
     })
     tf_sec = exchange.parse_timeframe(timeframe)
-    batch_size = 200  # Консервативный размер батча
+    batch_size = 500  # Binance разрешает больше
     all_raw = []
 
     try:
@@ -197,7 +196,7 @@ def fetch_ohlcv_safe(symbol: str, timeframe: str, limit: int = 2000):
             since = batch[-1][0] + tf_sec * 1000
             if len(batch) < fetch_n:
                 break
-            time.sleep(0.6)   # 600ms пауза — Bybit не банит
+            time.sleep(0.3)
 
     except ccxt.RateLimitExceeded:
         if not all_raw:
@@ -289,15 +288,18 @@ with st.sidebar:
     st.markdown("---")
 
     if st.button("📥 Загрузить историю и сканировать паттерны", use_container_width=True):
-        with st.spinner(f"Загрузка {symbol} {timeframe} с Bybit..."):
-            candles = fetch_ohlcv_safe(symbol, timeframe, limit=2000)
-        if not candles:
-            st.error("Не удалось загрузить данные. Попробуй позже — Bybit rate limit.")
+        if not reviewer.strip() or reviewer.strip().lower() == "anonymous":
+            st.error("⚠️ Пожалуйста, введите ваше имя (ник) перед загрузкой!")
         else:
-            with st.spinner(f"Wave Engine анализирует {len(candles)} свечей..."):
-                n = build_queue(symbol, timeframe, candles)
-            st.success(f"✅ Добавлено {n} новых гипотез в очередь!")
-            st.rerun()
+            with st.spinner(f"Загрузка {symbol} {timeframe} с Binance..."):
+                candles = fetch_ohlcv_safe(symbol, timeframe, limit=2000)
+            if not candles:
+                st.error("Не удалось загрузить данные. Попробуй позже — Binance rate limit.")
+            else:
+                with st.spinner(f"Wave Engine анализирует {len(candles)} свечей..."):
+                    n = build_queue(symbol, timeframe, candles)
+                st.success(f"✅ Добавлено {n} новых гипотез в очередь!")
+                st.rerun()
 
     st.markdown("---")
 
@@ -445,6 +447,10 @@ else:
                            placeholder="Например: W4 слишком мелкая, нет чередования...")
 
     def submit(label: int):
+        if not reviewer.strip() or reviewer.strip().lower() == "anonymous":
+            st.toast("⚠️ Пожалуйста, введите ваше имя в боковой панели слева!")
+            return
+            
         db.execute(
             "INSERT INTO labeled_setups (id,created_at,symbol,timeframe,pattern_type,features_json,label,wave_points_json,notes,reviewer) "
             "VALUES (?,datetime('now'),?,?,?,?,?,?,?,?)",
