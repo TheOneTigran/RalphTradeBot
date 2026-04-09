@@ -365,12 +365,12 @@ else:
         end_ts    = pts[-1]["timestamp"]
         wave_span = max(end_ts - start_ts, 3_600_000)
         tf_ms = {"1h": 3_600_000, "4h": 14_400_000, "15m": 900_000, "1d": 86_400_000}.get(tf, 3_600_000)
-        pad_l = max(wave_span * 3.0, 150 * tf_ms)
-        pad_r = max(wave_span * 0.5,  50 * tf_ms)
+        pad_l = max(wave_span * 4.0, 300 * tf_ms)
+        pad_r = max(wave_span * 1.5, 100 * tf_ms)
 
         candles = get_ohlcv_range(sym, tf, int(start_ts - pad_l), int(end_ts + pad_r))
-        if len(candles) > 600:
-            candles = candles[-600:]
+        if len(candles) > 1500:
+            candles = candles[-1500:]
 
         if not candles:
             st.markdown("""<div class="info-box">
@@ -431,7 +431,7 @@ else:
 
             fig.update_layout(
                 xaxis_rangeslider_visible=False,
-                height=660,
+                height=800,
                 template="plotly_dark",
                 paper_bgcolor="#0d1117",
                 plot_bgcolor="#0d1117",
