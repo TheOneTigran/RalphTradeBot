@@ -231,7 +231,7 @@
       </div>
       <div class="header-meta">
         <div class="badge-tg">🚀 Telegram Bot: @RalphTraderBot (Score ≥ 85%)</div>
-        <div style="margin-top: 6px;">Сгенерировано: 25.09.2026 15:08</div>
+        <div style="margin-top: 6px;">Сгенерировано: 25.09.2026 15:27</div>
       </div>
     </header>
 
@@ -239,32 +239,37 @@
     <section class="kpi-grid">
       <div class="kpi-card" style="--kpi-color: var(--cyan);">
         <div class="kpi-label">Всего сигналов</div>
-        <div class="kpi-value">4</div>
+        <div class="kpi-value">6</div>
         <div class="kpi-sub">Сканирование Топ-15 инструментов</div>
       </div>
       <div class="kpi-card" style="--kpi-color: var(--green);">
         <div class="kpi-label">Эталонные (Score ≥ 85)</div>
-        <div class="kpi-value">1</div>
+        <div class="kpi-value">3</div>
         <div class="kpi-sub">Отправлены в Telegram-канал</div>
       </div>
       <div class="kpi-card" style="--kpi-color: var(--green);">
         <div class="kpi-label">Win Rate (Score ≥ 85)</div>
-        <div class="kpi-value">0.0%</div>
+        <div class="kpi-value">100.0%</div>
         <div class="kpi-sub">Высшая точность входа</div>
       </div>
       <div class="kpi-card" style="--kpi-color: var(--gold);">
         <div class="kpi-label">Общий Win Rate</div>
-        <div class="kpi-value">0.0%</div>
+        <div class="kpi-value">75.0%</div>
         <div class="kpi-sub">Все подтвержденные (Score ≥ 70)</div>
+      </div>
+      <div class="kpi-card" style="--kpi-color: var(--gold);">
+        <div class="kpi-label">Ср. R:R (Риск/Прибыль)</div>
+        <div class="kpi-value">2.5 : 1</div>
+        <div class="kpi-sub">Взвешенный по TP1-TP4 Фибо</div>
       </div>
       <div class="kpi-card" style="--kpi-color: var(--purple);">
         <div class="kpi-label">Ср. время импульса</div>
-        <div class="kpi-value">15.2 ч</div>
+        <div class="kpi-value">3.5 ч</div>
         <div class="kpi-sub">От точки W0 до триггера W5</div>
       </div>
       <div class="kpi-card" style="--kpi-color: var(--cyan);">
         <div class="kpi-label">Частота сигналов</div>
-        <div class="kpi-value">0.1 / день</div>
+        <div class="kpi-value">0.2 / день</div>
         <div class="kpi-sub">На портфель из 15 монет</div>
       </div>
     </section>
@@ -273,10 +278,10 @@
     <div class="toolbar">
       <div class="filter-group">
         <span class="filter-label">Категория:</span>
-        <button class="btn-pill active" onclick="setFilter('tier', 'all')">Все (4)</button>
-        <button class="btn-pill" onclick="setFilter('tier', 'textbook')">Эталонные ≥ 85 (1)</button>
-        <button class="btn-pill" onclick="setFilter('tier', 'good')">Хорошие 70-84 (0)</button>
-        <button class="btn-pill" onclick="setFilter('tier', 'reject')">Отклонённые (3)</button>
+        <button class="btn-pill active" onclick="setFilter('tier', 'all')">Все (6)</button>
+        <button class="btn-pill" onclick="setFilter('tier', 'textbook')">Эталонные ≥ 85 (3)</button>
+        <button class="btn-pill" onclick="setFilter('tier', 'good')">Хорошие 70-84 (1)</button>
+        <button class="btn-pill" onclick="setFilter('tier', 'reject')">Отклонённые (2)</button>
       </div>
 
       <div class="filter-group">
@@ -299,67 +304,107 @@
             <th>Инструмент</th>
             <th>ТФ</th>
             <th>Сигнал</th>
-            <th>Цена</th>
-            <th>Формирование импульса (W0 → W5)</th>
+            <th>Вход / SL</th>
+            <th>Тейк-Профиты (TP1-TP4)</th>
+            <th>R:R</th>
+            <th>Импульс (W0 → W5)</th>
             <th>Оценка ИИ</th>
-            <th>W0 Исток / Дивергенция</th>
-            <th>Исход</th>
+            <th>W0 Исток</th>
+            <th>Исход (Фиксации)</th>
             <th>Обоснование ИИ (на русском)</th>
             <th>График</th>
           </tr>
         </thead>
         <tbody id="tableBody">
-          <tr data-tier="textbook" data-tf="15m">
+          <tr data-tier="textbook" data-tf="5m">
           <td><span class="tag-tier tier-textbook">Textbook ≥ 85</span></td>
           <td><span class="symbol-chip">BTCUSDT</span></td>
-          <td><b>15m</b></td>
-          <td><span class="dir-badge dir-long">🟢 LONG</span></td>
-          <td>$73,466.40</td>
-          <td><b>15.2 ч</b> (61 бар.)</td>
-          <td><span class="score-badge" style="color: var(--green)">88/100</span></td>
-          <td>RSI: 77.4 (OVERBOUGHT)</td>
-          <td><span class='pnl-badge pnl-loss'>LOSS (-3.50%)</span></td>
-          <td class="reason-cell">Структура 0-5 выглядит достаточно чисто: W3 выражена явно, W2 и W4 корректны, а правило непересечения W1/W4 соблюдено. Разворотная дивергенция RSI в районе W3-W5 заметная и подтверждает истощение импульса, хотя по сравнению с эталоном структура несколько локально шумная.</td>
-          <td><button class='btn-view' onclick="openModal('results/confirmed_signals/BTCUSDT_15m_LONG_314_s88.png')">👁️ График</button></td>
+          <td><b>5m</b></td>
+          <td><span class="dir-badge dir-short">🔴 SHORT</span></td>
+          <td><div><b>$73,457.20</b><br><span style='color:var(--red); font-size:11px; font-weight:600;'>SL $73,595.43 (-0.19%)</span></div></td>
+          <td><div style='font-size:11px; line-height:1.35; font-family:var(--font-mono);'><span style='color:#26A69A;'>TP1 (25%): $73,290.45 (+0.2%)</span><br><span style='color:#089981;'>TP2 (35%): $73,169.97 (+0.4%)</span><br><span style='color:#00E676;'>TP3 (25%): $73,072.60 (+0.5%)</span><br><span style='color:#00E5FF; font-weight:700;'>TP4 (15%): $72,975.23 (+0.7%)</span></div></td>
+          <td><span class='score-badge' style='color:var(--gold); font-size:13px;'>2.2 : 1</span></td>
+          <td><b>1.8 ч</b> (21 бар.)<br><span style='color:var(--cyan); font-weight:700; font-size:11px;'>$825.2000 (+1.14%)</span></td>
+          <td><span class="score-badge" style="color: var(--green)">100/100</span></td>
+          <td>RSI: 32.7 (COOL) <span style='color:var(--cyan);font-weight:700;'>[W0-DIV ★]</span></td>
+          <td><div><span class='pnl-badge pnl-win'>WIN (+0.06%)</span><br><div style='font-size:10px; margin-top:3px;'><span style='color:#26A69A; font-weight:700;'>TP1✅</span> <span style='color:var(--gold); font-size:10px;'>BE✅</span></div></div></td>
+          <td class="reason-cell">DRY RUN: Валидный bullish импульс (Score: 100). W3 самая длинная (L1=382.8, L3=602.1, L5=360.1). W0 RSI=32.7 (COOL) [Origin DIV: OK]. Ретрейс W2=90.5%, W4=28.8%. Overlap W4/W1 отсутствует. Чистота: 0.52.</td>
+          <td><button class='btn-view' onclick="openModal('results/confirmed_signals/BTCUSDT_5m_SHORT_83_s100.png')">👁️ График</button></td>
         </tr>
-<tr data-tier="reject" data-tf="15m">
-          <td><span class="tag-tier tier-reject">Rejected</span></td>
+<tr data-tier="textbook" data-tf="5m">
+          <td><span class="tag-tier tier-textbook">Textbook ≥ 85</span></td>
           <td><span class="symbol-chip">BTCUSDT</span></td>
-          <td><b>15m</b></td>
-          <td><span class="dir-badge dir-short">🔴 SHORT</span></td>
-          <td>$61,629.60</td>
-          <td><b>22.8 ч</b> (91 бар.)</td>
-          <td><span class="score-badge" style="color: var(--red)">50/100</span></td>
-          <td>RSI: 11.6 (OVERSOLD)</td>
-          <td><span class='pnl-badge pnl-loss'>LOSS (-3.50%)</span></td>
-          <td class="reason-cell">Все Vision API временно недоступны</td>
-          <td><button class='btn-view' onclick="openModal('results/rejected_signals/BTCUSDT_15m_SHORT_933_s50.png')">👁️ График</button></td>
-        </tr>
-<tr data-tier="reject" data-tf="15m">
-          <td><span class="tag-tier tier-reject">Rejected</span></td>
-          <td><span class="symbol-chip">ETHUSDT</span></td>
-          <td><b>15m</b></td>
+          <td><b>5m</b></td>
           <td><span class="dir-badge dir-long">🟢 LONG</span></td>
-          <td>$1,999.39</td>
-          <td><b>13.8 ч</b> (55 бар.)</td>
-          <td><span class="score-badge" style="color: var(--red)">50/100</span></td>
-          <td>RSI: 77.6 (OVERBOUGHT) <span style='color:var(--cyan);font-weight:700;'>[W0-DIV ★]</span></td>
-          <td><span class='pnl-badge pnl-loss'>LOSS (-6.53%)</span></td>
-          <td class="reason-cell">Все Vision API временно недоступны</td>
-          <td><button class='btn-view' onclick="openModal('results/rejected_signals/ETHUSDT_15m_LONG_316_s50.png')">👁️ График</button></td>
+          <td><div><b>$70,860.00</b><br><span style='color:var(--red); font-size:11px; font-weight:600;'>SL $70,544.42 (-0.45%)</span></div></td>
+          <td><div style='font-size:11px; line-height:1.35; font-family:var(--font-mono);'><span style='color:#26A69A;'>TP1 (25%): $71,220.22 (+0.5%)</span><br><span style='color:#089981;'>TP2 (35%): $71,572.74 (+1.0%)</span><br><span style='color:#00E676;'>TP3 (25%): $71,857.65 (+1.4%)</span><br><span style='color:#00E5FF; font-weight:700;'>TP4 (15%): $72,142.56 (+1.8%)</span></div></td>
+          <td><span class='score-badge' style='color:var(--gold); font-size:13px;'>2.5 : 1</span></td>
+          <td><b>6.8 ч</b> (81 бар.)<br><span style='color:var(--cyan); font-weight:700; font-size:11px;'>$2,414.50 (-3.30%)</span></td>
+          <td><span class="score-badge" style="color: var(--green)">100/100</span></td>
+          <td>RSI: 65.2 (HOT) <span style='color:var(--cyan);font-weight:700;'>[W0-DIV ★]</span></td>
+          <td><div><span class='pnl-badge pnl-win'>WIN (+0.48%)</span><br><div style='font-size:10px; margin-top:3px;'><span style='color:#26A69A; font-weight:700;'>TP1✅</span> <span style='color:#089981; font-weight:700;'>TP2✅</span> <span style='color:var(--gold); font-size:10px;'>BE✅</span></div></div></td>
+          <td class="reason-cell">DRY RUN: Валидный bearish импульс (Score: 100). W3 самая длинная (L1=176.9, L3=1930.4, L5=821.6). W0 RSI=65.2 (HOT) [Origin DIV: OK]. Ретрейс W2=46.6%, W4=22.4%. Overlap W4/W1 отсутствует. Чистота: 0.72.</td>
+          <td><button class='btn-view' onclick="openModal('results/confirmed_signals/BTCUSDT_5m_LONG_1224_s100.png')">👁️ График</button></td>
         </tr>
-<tr data-tier="reject" data-tf="15m">
+<tr data-tier="good" data-tf="5m">
+          <td><span class="tag-tier tier-good">Good 70-84</span></td>
+          <td><span class="symbol-chip">BTCUSDT</span></td>
+          <td><b>5m</b></td>
+          <td><span class="dir-badge dir-short">🔴 SHORT</span></td>
+          <td><div><b>$67,300.10</b><br><span style='color:var(--red); font-size:11px; font-weight:600;'>SL $67,481.07 (-0.27%)</span></div></td>
+          <td><div style='font-size:11px; line-height:1.35; font-family:var(--font-mono);'><span style='color:#26A69A;'>TP1 (25%): $66,912.72 (+0.6%)</span><br><span style='color:#089981;'>TP2 (35%): $66,623.64 (+1.0%)</span><br><span style='color:#00E676;'>TP3 (25%): $66,390.00 (+1.4%)</span><br><span style='color:#00E5FF; font-weight:700;'>TP4 (15%): $66,156.36 (+1.7%)</span></div></td>
+          <td><span class='score-badge' style='color:var(--gold); font-size:13px;'>4.0 : 1</span></td>
+          <td><b>2.1 ч</b> (25 бар.)<br><span style='color:var(--cyan); font-weight:700; font-size:11px;'>$1,980.00 (+3.03%)</span></td>
+          <td><span class="score-badge" style="color: var(--cyan)">84/100</span></td>
+          <td>RSI: 12.3 (OVERSOLD)</td>
+          <td><div><span class='pnl-badge pnl-loss'>LOSS (-0.27%)</span><br><div style='font-size:10px; margin-top:3px;'><span style='color:var(--red); font-size:10px;'>SL❌</span></div></div></td>
+          <td class="reason-cell">DRY RUN: Валидный bullish импульс (Score: 84). W3 >= min(W1, W5) (L1=1189.0, L3=1029.8, L5=650.7). W0 RSI=12.3 (OVERSOLD). Ретрейс W2=30.1%, W4=51.6%. Overlap W4/W1 отсутствует. Чистота: 0.86.</td>
+          <td><button class='btn-view' onclick="openModal('results/confirmed_signals/BTCUSDT_5m_SHORT_1677_s84.png')">👁️ График</button></td>
+        </tr>
+<tr data-tier="reject" data-tf="5m">
           <td><span class="tag-tier tier-reject">Rejected</span></td>
           <td><span class="symbol-chip">ETHUSDT</span></td>
-          <td><b>15m</b></td>
-          <td><span class="dir-badge dir-short">🔴 SHORT</span></td>
-          <td>$1,565.29</td>
-          <td><b>7.5 ч</b> (30 бар.)</td>
+          <td><b>5m</b></td>
+          <td><span class="dir-badge dir-long">🟢 LONG</span></td>
+          <td><div><b>$1,975.21</b><br><span style='color:var(--red); font-size:11px; font-weight:600;'>SL - (-0.00%)</span></div></td>
+          <td><span style='color:var(--text-muted);'>-</span></td>
+          <td>-</td>
+          <td><b>2.5 ч</b> (30 бар.)</td>
           <td><span class="score-badge" style="color: var(--red)">0/100</span></td>
           <td>N/A</td>
-          <td><span class='pnl-badge pnl-loss'>LOSS (-6.53%)</span></td>
+          <td><div><span class='pnl-badge pnl-win'>WIN (+1.80%)</span></div></td>
           <td class="reason-cell">Отклонено алгоритмом: Структура не соответствует 5-волновому импульсу Эллиотта (нарушены базовые правила)</td>
-          <td><button class='btn-view' onclick="openModal('results/rejected_signals/ETHUSDT_15m_SHORT_920_s0.png')">👁️ График</button></td>
+          <td><button class='btn-view' onclick="openModal('results/rejected_signals/ETHUSDT_5m_LONG_42_s0.png')">👁️ График</button></td>
+        </tr>
+<tr data-tier="reject" data-tf="5m">
+          <td><span class="tag-tier tier-reject">Rejected</span></td>
+          <td><span class="symbol-chip">ETHUSDT</span></td>
+          <td><b>5m</b></td>
+          <td><span class="dir-badge dir-long">🟢 LONG</span></td>
+          <td><div><b>$2,003.66</b><br><span style='color:var(--red); font-size:11px; font-weight:600;'>SL - (-0.00%)</span></div></td>
+          <td><span style='color:var(--text-muted);'>-</span></td>
+          <td>-</td>
+          <td><b>2.5 ч</b> (30 бар.)</td>
+          <td><span class="score-badge" style="color: var(--red)">0/100</span></td>
+          <td>N/A</td>
+          <td><div><span class='pnl-badge pnl-loss'>LOSS (-3.20%)</span></div></td>
+          <td class="reason-cell">Отклонено алгоритмом: Структура не соответствует 5-волновому импульсу Эллиотта (нарушены базовые правила)</td>
+          <td><button class='btn-view' onclick="openModal('results/rejected_signals/ETHUSDT_5m_LONG_509_s0.png')">👁️ График</button></td>
+        </tr>
+<tr data-tier="textbook" data-tf="5m">
+          <td><span class="tag-tier tier-textbook">Textbook ≥ 85</span></td>
+          <td><span class="symbol-chip">ETHUSDT</span></td>
+          <td><b>5m</b></td>
+          <td><span class="dir-badge dir-long">🟢 LONG</span></td>
+          <td><div><b>$1,890.17</b><br><span style='color:var(--red); font-size:11px; font-weight:600;'>SL $1,877.18 (-0.69%)</span></div></td>
+          <td><div style='font-size:11px; line-height:1.35; font-family:var(--font-mono);'><span style='color:#26A69A;'>TP1 (25%): $1,895.00 (+0.3%)</span><br><span style='color:#089981;'>TP2 (35%): $1,904.28 (+0.7%)</span><br><span style='color:#00E676;'>TP3 (25%): $1,911.78 (+1.1%)</span><br><span style='color:#00E5FF; font-weight:700;'>TP4 (15%): $1,919.29 (+1.5%)</span></div></td>
+          <td><span class='score-badge' style='color:var(--gold); font-size:13px;'>1.2 : 1</span></td>
+          <td><b>3.2 ч</b> (39 бар.)<br><span style='color:var(--cyan); font-weight:700; font-size:11px;'>$63.5700 (-3.27%)</span></td>
+          <td><span class="score-badge" style="color: var(--green)">89/100</span></td>
+          <td>RSI: 78.8 (OVERBOUGHT)</td>
+          <td><div><span class='pnl-badge pnl-win'>WIN (+0.61%)</span><br><div style='font-size:10px; margin-top:3px;'><span style='color:#26A69A; font-weight:700;'>TP1✅</span> <span style='color:#089981; font-weight:700;'>TP2✅</span> <span style='color:#00E676; font-weight:700;'>TP3✅</span> <span style='color:var(--gold); font-size:10px;'>BE✅</span></div></div></td>
+          <td class="reason-cell">DRY RUN: Валидный bearish импульс (Score: 89). W3 >= min(W1, W5) (L1=25.1, L3=29.0, L5=35.8). W0 RSI=78.8 (OVERBOUGHT). Ретрейс W2=49.1%, W4=48.2%. Overlap W4/W1 отсутствует. Чистота: 0.73.</td>
+          <td><button class='btn-view' onclick="openModal('results/confirmed_signals/ETHUSDT_5m_LONG_1552_s89.png')">👁️ График</button></td>
         </tr>
         </tbody>
       </table>

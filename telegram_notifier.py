@@ -27,6 +27,16 @@ from config import (
 logger = logging.getLogger(__name__)
 
 
+def _fmt_p(p: float) -> str:
+    """Форматирует цену в зависимости от масштаба инструмента."""
+    if p >= 1000.0:
+        return f"${p:,.2f}"
+    elif p >= 1.0:
+        return f"${p:,.4f}"
+    else:
+        return f"${p:,.6f}"
+
+
 def format_signal_message(
     symbol: str,
     interval: str,
@@ -38,37 +48,90 @@ def format_signal_message(
     reason: str,
     score: int,
     detection_time: Optional[datetime] = None,
+    trade_plan: Optional[Any] = None,
+    dur_bars: Optional[int] = None,
+    dur_hours: Optional[float] = None,
+    w0_rsi: Optional[float] = None,
+    w0_status: Optional[str] = None,
+    origin_div: bool = False,
+    w3_longest: bool = True,
 ) -> str:
-    """Формирует текст сообщения для Telegram с HTML-разметкой."""
+    """Формирует текст сообщения для Telegram с полноценным торговым планом и HTML-разметкой."""
     dt = detection_time or datetime.now()
     dt_str = dt.strftime("%d.%m.%Y в %H:%M")
     
     if direction == "SHORT":
-        header = "🔴 <b>Медвежий импульс</b>"
-        rsi_zone = "🔴 Зона перекупленности"
-        arrow = "↘️"
-        action = "⚠️ <b>Потенциальный разворот вниз</b>"
+        header = "🔴 <b>МЕДВЕЖИЙ ИМПУЛЬС ЗАВЕРШЁН</b>"
+        dir_badge = "▼ <b>SHORT</b>"
+        sl_note = "└ За экстремумом W5"
+        imp_sign = "+"
     else:
-        header = "🟢 <b>Бычий импульс</b>"
-        rsi_zone = "🟢 Зона перепроданности"
-        arrow = "↗️"
-        action = "⚠️ <b>Потенциальный разворот вверх</b>"
+        header = "🟢 <b>БЫЧИЙ ИМПУЛЬС ЗАВЕРШЁН</b>"
+        dir_badge = "▲ <b>LONG</b>"
+        sl_note = "└ За экстремумом W5"
+        imp_sign = "-"
 
-    # Форматирование цены
-    price_str = f"${signal_price:,.4f}" if signal_price < 10.0 else f"${signal_price:,.2f}"
+    # Если есть TradePlan
+    if trade_plan is not None:
+        entry_s = _fmt_p(trade_plan.entry_price)
+        sl_s = _fmt_p(trade_plan.sl_price)
+        tp1_s = _fmt_p(trade_plan.tp1_price)
+        tp2_s = _fmt_p(trade_plan.tp2_price)
+        tp3_s = _fmt_p(trade_plan.tp3_price)
+        tp4_s = _fmt_p(trade_plan.tp4_price)
+
+        plan_block = (
+            f"━━━ <b>ТОРГОВЫЙ ПЛАН</b> ━━━\n\n"
+            f"{dir_badge} │ Вход: <b>{entry_s}</b>\n"
+            f"🛑 SL: <b>{sl_s}</b> (−{trade_plan.sl_pct:.2f}%)\n"
+            f"   {sl_note}\n\n"
+            f"🎯 TP1: <b>{tp1_s}</b> (+{trade_plan.tp1_pct:.2f}%) → Закрыть 25% (23.6% Фибо)\n"
+            f"🎯 TP2: <b>{tp2_s}</b> (+{trade_plan.tp2_pct:.2f}%) → Закрыть 35% (38.2% Фибо)\n"
+            f"🎯 TP3: <b>{tp3_s}</b> (+{trade_plan.tp3_pct:.2f}%) → Закрыть 25% (50.0% Фибо)\n"
+            f"🎯 TP4: <b>{tp4_s}</b> (+{trade_plan.tp4_pct:.2f}%) → Закрыть 15% (61.8% Фибо)\n\n"
+            f"📊 R:R (средневзвешенный): <b>{trade_plan.rr_ratio:.1f} : 1</b>\n"
+            f"📈 RSI: <b>{swept_rsi:.1f} ➔ {signal_rsi:.1f}</b> (дивергенция)\n\n"
+        )
+
+        w0_extra = ""
+        if w0_rsi is not None:
+            w0_extra = f" (RSI {w0_rsi:.1f}"
+            if origin_div:
+                w0_extra += " • W0-DIV ✅)"
+            else:
+                w0_extra += ")"
+
+        w_struct_block = (
+            f"━━━ <b>ВОЛНОВАЯ СТРУКТУРА</b> ━━━\n\n"
+            f"W0: {_fmt_p(trade_plan.w0_price)}{w0_extra}\n"
+            f"W1: {_fmt_p(trade_plan.w1_price)} │ W2: {_fmt_p(trade_plan.w2_price)}\n"
+            f"W3: {_fmt_p(trade_plan.w3_price)} │ W4: {_fmt_p(trade_plan.w4_price)}\n"
+            f"W5: {_fmt_p(trade_plan.w5_price)} (экстремум импульса)\n\n"
+            f"📏 Длина импульса: <b>{_fmt_p(trade_plan.impulse_range)} ({imp_sign}{trade_plan.impulse_pct:.2f}%)</b>\n"
+        )
+        if dur_hours and dur_bars:
+            w_struct_block += f"⏳ Формирование: <b>{dur_hours:.1f}ч</b> ({dur_bars} бар.)\n"
+        if w3_longest:
+            w_struct_block += "🔄 W3 = самая длинная волна ✅\n"
+        w_struct_block += "\n"
+    else:
+        price_str = _fmt_p(signal_price)
+        plan_block = (
+            f"💰 Цена: <b>{price_str}</b>\n"
+            f"📊 RSI: <b>{swept_rsi:.1f} ➔ {signal_rsi:.1f}</b>\n\n"
+        )
+        w_struct_block = ""
 
     msg = (
         f"{header}\n\n"
         f"📌 <code>{symbol}</code> (Crypto)\n"
-        f"⏱️ {interval}\n"
-        f"💰 {price_str}\n"
-        f"📊 RSI Пивоты: {swept_rsi:.1f} {arrow} {signal_rsi:.1f} ({rsi_zone})\n"
-        f"📈 Текущий RSI(14): {current_rsi:.1f}\n\n"
-        f"{action}\n\n"
-        f"📝 <b>Обоснование:</b>\n"
+        f"⏱️ <b>{interval}</b>\n\n"
+        f"{plan_block}"
+        f"{w_struct_block}"
+        f"━━━ <b>ОБОСНОВАНИЕ</b> ━━━\n\n"
         f"{reason}\n\n"
-        f"📅 Обнаружено: {dt_str}\n"
-        f"🎯 Оценка ИИ: <b>{score}/100</b> (Textbook)"
+        f"🎯 Оценка ИИ: <b>{score}/100</b> (Textbook)\n"
+        f"📅 {dt_str}"
     )
     return msg
 
@@ -85,6 +148,13 @@ def send_signal_to_telegram(
     reason: str,
     score: int,
     detection_time: Optional[datetime] = None,
+    trade_plan: Optional[Any] = None,
+    dur_bars: Optional[int] = None,
+    dur_hours: Optional[float] = None,
+    w0_rsi: Optional[float] = None,
+    w0_status: Optional[str] = None,
+    origin_div: bool = False,
+    w3_longest: bool = True,
     bot_token: str = TELEGRAM_BOT_TOKEN,
     chat_id: str = TELEGRAM_CHAT_ID,
     min_score: int = TELEGRAM_MIN_SCORE,
@@ -112,6 +182,13 @@ def send_signal_to_telegram(
         reason=reason,
         score=score,
         detection_time=detection_time,
+        trade_plan=trade_plan,
+        dur_bars=dur_bars,
+        dur_hours=dur_hours,
+        w0_rsi=w0_rsi,
+        w0_status=w0_status,
+        origin_div=origin_div,
+        w3_longest=w3_longest,
     )
 
     url_photo = f"https://api.telegram.org/bot{bot_token}/sendPhoto"

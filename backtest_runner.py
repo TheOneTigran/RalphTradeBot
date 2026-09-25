@@ -27,7 +27,7 @@ from config import (
     DATA_DIR, RESULTS_DIR, CONFIRMED_DIR, REJECTED_DIR,
     DEFAULT_PRESETS, TOP_15_SYMBOLS,
     MIN_ALGO_ELLIOTT_SCORE, MIN_VISION_CONFIRM_SCORE, TELEGRAM_MIN_SCORE,
-    LOOKBACK_CANDLES,
+    LOOKBACK_CANDLES, SL_BUFFER_PCT, MIN_RR_RATIO, BREAKEVEN_AFTER_TP1,
 )
 from elliott_detector import detect_elliott_impulse
 from chart_renderer import render_signal_chart, annotate_chart_with_analysis
@@ -36,6 +36,7 @@ from vision_filter import evaluate_elliott_impulse
 from signal_scanner import scan_signals, calculate_rsi_wilder
 from telegram_notifier import send_signal_to_telegram
 from html_reporter import generate_html_report
+from trade_planner import calculate_trade_plan, simulate_trade_multi_tp, TradePlan
 
 logging.basicConfig(
     level=logging.INFO,
@@ -96,6 +97,7 @@ def load_data(symbol: str, interval: str) -> Optional[pd.DataFrame]:
         DATA_DIR,
         Path("c:/Users/user/Desktop/RalphTradeBot/data"),
         Path("c:/Users/user/Desktop/Hernya/RalphTradeBot/data"),
+        Path("c:/Users/user/Desktop/Hernya/liquidity_hunting_strategy/data"),
     ]
     for d_dir in data_dirs:
         patterns = [
@@ -178,6 +180,35 @@ def run_backtest(
             )
 
             algo_passed = algo_res.is_valid and (algo_res.score >= MIN_ALGO_ELLIOTT_SCORE)
+
+            # Расчёт профессионального торгового плана на завершённом импульсе W0-W5
+            trade_plan = None
+            sim_res = None
+            if algo_res.is_valid and sig.bar_index + 1 < len(df):
+                entry_price = float(open_p[sig.bar_index + 1])
+                trade_plan = calculate_trade_plan(
+                    wave_points=algo_res.wave_points,
+                    direction=sig.direction,
+                    entry_price=entry_price,
+                    buffer_pct=SL_BUFFER_PCT,
+                    min_rr_ratio=MIN_RR_RATIO,
+                )
+                sim_res = simulate_trade_multi_tp(
+                    df=df,
+                    entry_bar=sig.bar_index + 1,
+                    plan=trade_plan,
+                    breakeven_after_tp1=BREAKEVEN_AFTER_TP1,
+                )
+                # Обновляем результаты сделки в сигнале
+                sig.trade_result = sim_res.trade_result
+                sig.trade_pnl_pct = sim_res.final_pnl_pct
+                sig.entry_price = trade_plan.entry_price
+                sig.sl_price = trade_plan.sl_price
+                sig.tp_price = trade_plan.tp2_price # TP2 как базовый benchmark
+
+            # Если R:R не удовлетворяет минимальному требованию (1.5:1)
+            if trade_plan is not None and not trade_plan.is_viable:
+                algo_res.rule_violations.append(f"Низкий R:R ({trade_plan.rr_ratio:.2f} < {MIN_RR_RATIO})")
             
             # Извлечение параметров W0 и W3
             w0_rsi = algo_res.details.get("w0_rsi")
@@ -216,6 +247,7 @@ def run_backtest(
                 orig_prev_bar=orig_b,
                 orig_prev_price=orig_p,
                 orig_prev_rsi=orig_r,
+                trade_plan=trade_plan,
             )
 
             # 3. Аудит Vision AI
@@ -283,6 +315,7 @@ def run_backtest(
                     signal_price=sig.signal_price,
                     trade_result=sig.trade_result,
                     trade_pnl=sig.trade_pnl_pct,
+                    trade_plan=trade_plan,
                 )
                 chart_path.write_bytes(annotated_png)
             except Exception as e:
@@ -311,6 +344,13 @@ def run_backtest(
                     reason=analysis["reason"],
                     score=score,
                     detection_time=sig_dt,
+                    trade_plan=trade_plan,
+                    dur_bars=dur_bars,
+                    dur_hours=dur_hours,
+                    w0_rsi=w0_rsi,
+                    w0_status=w0_stat,
+                    origin_div=orig_div,
+                    w3_longest=algo_res.details.get("w3_longest", True) if algo_res.is_valid else True,
                 )
 
             item = {
@@ -333,6 +373,27 @@ def run_backtest(
                 "reason": analysis["reason"],
                 "chart_img_rel": rel_img,
                 "provider": analysis["provider"],
+                # Поля торгового плана
+                "entry_price": trade_plan.entry_price if trade_plan else sig.signal_price,
+                "sl_price": trade_plan.sl_price if trade_plan else 0.0,
+                "sl_pct": trade_plan.sl_pct if trade_plan else 0.0,
+                "tp1_price": trade_plan.tp1_price if trade_plan else 0.0,
+                "tp1_pct": trade_plan.tp1_pct if trade_plan else 0.0,
+                "tp2_price": trade_plan.tp2_price if trade_plan else 0.0,
+                "tp2_pct": trade_plan.tp2_pct if trade_plan else 0.0,
+                "tp3_price": trade_plan.tp3_price if trade_plan else 0.0,
+                "tp3_pct": trade_plan.tp3_pct if trade_plan else 0.0,
+                "tp4_price": trade_plan.tp4_price if trade_plan else 0.0,
+                "tp4_pct": trade_plan.tp4_pct if trade_plan else 0.0,
+                "rr_ratio": trade_plan.rr_ratio if trade_plan else 0.0,
+                "impulse_range": trade_plan.impulse_range if trade_plan else 0.0,
+                "impulse_pct": trade_plan.impulse_pct if trade_plan else 0.0,
+                "tp1_hit": sim_res.tp1_hit if sim_res else False,
+                "tp2_hit": sim_res.tp2_hit if sim_res else False,
+                "tp3_hit": sim_res.tp3_hit if sim_res else False,
+                "tp4_hit": sim_res.tp4_hit if sim_res else False,
+                "be_hit": sim_res.be_hit if sim_res else False,
+                "sl_hit": sim_res.sl_hit if sim_res else False,
             }
             all_signals_data.append(item)
 

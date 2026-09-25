@@ -277,6 +277,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <div class="kpi-value">__OVERALL_WR__%</div>
         <div class="kpi-sub">Все подтвержденные (Score ≥ 70)</div>
       </div>
+      <div class="kpi-card" style="--kpi-color: var(--gold);">
+        <div class="kpi-label">Ср. R:R (Риск/Прибыль)</div>
+        <div class="kpi-value">__AVG_RR__ : 1</div>
+        <div class="kpi-sub">Взвешенный по TP1-TP4 Фибо</div>
+      </div>
       <div class="kpi-card" style="--kpi-color: var(--purple);">
         <div class="kpi-label">Ср. время импульса</div>
         <div class="kpi-value">__AVG_DURATION__</div>
@@ -319,11 +324,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <th>Инструмент</th>
             <th>ТФ</th>
             <th>Сигнал</th>
-            <th>Цена</th>
-            <th>Формирование импульса (W0 → W5)</th>
+            <th>Вход / SL</th>
+            <th>Тейк-Профиты (TP1-TP4)</th>
+            <th>R:R</th>
+            <th>Импульс (W0 → W5)</th>
             <th>Оценка ИИ</th>
-            <th>W0 Исток / Дивергенция</th>
-            <th>Исход</th>
+            <th>W0 Исток</th>
+            <th>Исход (Фиксации)</th>
             <th>Обоснование ИИ (на русском)</th>
             <th>График</th>
           </tr>
@@ -420,6 +427,19 @@ def generate_html_report(
 
     freq_per_day = f"{(total_signals / days_span):.1f}" if days_span > 0 else "N/A"
 
+    # Расчет среднего R:R
+    rr_vals = [s.get("rr_ratio", 0.0) for s in confirmed_signals if s.get("rr_ratio", 0.0) > 0]
+    avg_rr = (sum(rr_vals) / len(rr_vals)) if rr_vals else 0.0
+    avg_rr_str = f"{avg_rr:.1f}"
+
+    def _fmt_price_val(p: float) -> str:
+        if p >= 1000.0:
+            return f"${p:,.2f}"
+        elif p >= 1.0:
+            return f"${p:,.4f}"
+        else:
+            return f"${p:,.6f}"
+
     # Формирование строк таблицы
     rows_html = []
     for s in signals_data:
@@ -443,12 +463,49 @@ def generate_html_report(
         dir_icon = "🔴 SHORT" if dir_val == "SHORT" else "🟢 LONG"
         dir_class = "dir-short" if dir_val == "SHORT" else "dir-long"
 
-        price = s.get("signal_price", 0.0)
-        price_str = f"${price:,.4f}" if price < 10.0 else f"${price:,.2f}"
+        # Вход и Стоп-лосс
+        entry_p = s.get("entry_price", s.get("signal_price", 0.0))
+        entry_str = _fmt_price_val(entry_p)
+        sl_p = s.get("sl_price", 0.0)
+        sl_pct = s.get("sl_pct", 0.0)
+        sl_str = _fmt_price_val(sl_p) if sl_p > 0 else "-"
+        entry_sl_html = f"<div><b>{entry_str}</b><br><span style='color:var(--red); font-size:11px; font-weight:600;'>SL {sl_str} (-{sl_pct:.2f}%)</span></div>"
 
+        # Тейк-Профиты TP1-TP4
+        tp1_p = s.get("tp1_price", 0.0)
+        tp1_pct = s.get("tp1_pct", 0.0)
+        tp2_p = s.get("tp2_price", 0.0)
+        tp2_pct = s.get("tp2_pct", 0.0)
+        tp3_p = s.get("tp3_price", 0.0)
+        tp3_pct = s.get("tp3_pct", 0.0)
+        tp4_p = s.get("tp4_price", 0.0)
+        tp4_pct = s.get("tp4_pct", 0.0)
+
+        if tp1_p > 0:
+            tp_html = (
+                f"<div style='font-size:11px; line-height:1.35; font-family:var(--font-mono);'>"
+                f"<span style='color:#26A69A;'>TP1 (25%): {_fmt_price_val(tp1_p)} (+{tp1_pct:.1f}%)</span><br>"
+                f"<span style='color:#089981;'>TP2 (35%): {_fmt_price_val(tp2_p)} (+{tp2_pct:.1f}%)</span><br>"
+                f"<span style='color:#00E676;'>TP3 (25%): {_fmt_price_val(tp3_p)} (+{tp3_pct:.1f}%)</span><br>"
+                f"<span style='color:#00E5FF; font-weight:700;'>TP4 (15%): {_fmt_price_val(tp4_p)} (+{tp4_pct:.1f}%)</span>"
+                f"</div>"
+            )
+        else:
+            tp_html = "<span style='color:var(--text-muted);'>-</span>"
+
+        # R:R
+        rr_val = s.get("rr_ratio", 0.0)
+        rr_html = f"<span class='score-badge' style='color:var(--gold); font-size:13px;'>{rr_val:.1f} : 1</span>" if rr_val > 0 else "-"
+
+        # Формирование импульса (время + длина в валюте и процентах)
         dur_bars = s.get("duration_bars", 0)
         dur_h = s.get("duration_hours", 0.0)
+        imp_range = s.get("impulse_range", 0.0)
+        imp_pct = s.get("impulse_pct", 0.0)
+        imp_sign = "+" if dir_val == "SHORT" else "-"
         dur_text = f"<b>{dur_h:.1f} ч</b> ({dur_bars} бар.)" if dur_h > 0 else f"{dur_bars} бар."
+        if imp_pct > 0:
+            dur_text += f"<br><span style='color:var(--cyan); font-weight:700; font-size:11px;'>{_fmt_price_val(imp_range)} ({imp_sign}{imp_pct:.2f}%)</span>"
 
         w0_rsi = s.get("w0_rsi")
         w0_stat = s.get("w0_status", "")
@@ -457,14 +514,33 @@ def generate_html_report(
         if orig_div:
             w0_info += " <span style='color:var(--cyan);font-weight:700;'>[W0-DIV ★]</span>"
 
+        # Исход и частичные фиксации
         res = s.get("trade_result", "")
         pnl = s.get("trade_pnl_pct", 0.0)
         if res == "win":
-            pnl_html = f"<span class='pnl-badge pnl-win'>WIN ({pnl:+.2f}%)</span>"
+            pnl_badge = f"<span class='pnl-badge pnl-win'>WIN ({pnl:+.2f}%)</span>"
         elif res == "loss":
-            pnl_html = f"<span class='pnl-badge pnl-loss'>LOSS ({pnl:+.2f}%)</span>"
+            pnl_badge = f"<span class='pnl-badge pnl-loss'>LOSS ({pnl:+.2f}%)</span>"
         else:
-            pnl_html = f"<span class='pnl-badge'>OPEN ({pnl:+.2f}%)</span>"
+            pnl_badge = f"<span class='pnl-badge'>OPEN ({pnl:+.2f}%)</span>"
+
+        # Индикаторы взятия уровней TP1-4
+        hits_chips = []
+        if s.get("tp1_hit"):
+            hits_chips.append("<span style='color:#26A69A; font-weight:700;'>TP1✅</span>")
+        if s.get("tp2_hit"):
+            hits_chips.append("<span style='color:#089981; font-weight:700;'>TP2✅</span>")
+        if s.get("tp3_hit"):
+            hits_chips.append("<span style='color:#00E676; font-weight:700;'>TP3✅</span>")
+        if s.get("tp4_hit"):
+            hits_chips.append("<span style='color:#00E5FF; font-weight:700;'>TP4✅</span>")
+        if s.get("be_hit"):
+            hits_chips.append("<span style='color:var(--gold); font-size:10px;'>BE✅</span>")
+        if s.get("sl_hit"):
+            hits_chips.append("<span style='color:var(--red); font-size:10px;'>SL❌</span>")
+
+        hits_str = f"<br><div style='font-size:10px; margin-top:3px;'>{' '.join(hits_chips)}</div>" if hits_chips else ""
+        outcome_html = f"<div>{pnl_badge}{hits_str}</div>"
 
         reason = s.get("reason", "")
         img_rel = s.get("chart_img_rel", "")
@@ -475,11 +551,13 @@ def generate_html_report(
           <td><span class="symbol-chip">{sym}</span></td>
           <td><b>{tf}</b></td>
           <td><span class="dir-badge {dir_class}">{dir_icon}</span></td>
-          <td>{price_str}</td>
+          <td>{entry_sl_html}</td>
+          <td>{tp_html}</td>
+          <td>{rr_html}</td>
           <td>{dur_text}</td>
           <td><span class="score-badge" style="color: {'var(--green)' if score>=85 else 'var(--cyan)' if score>=70 else 'var(--red)'}">{score}/100</span></td>
           <td>{w0_info}</td>
-          <td>{pnl_html}</td>
+          <td>{outcome_html}</td>
           <td class="reason-cell">{reason}</td>
           <td>{btn_img}</td>
         </tr>"""
@@ -491,6 +569,7 @@ def generate_html_report(
     html = html.replace("__TEXTBOOK_COUNT__", str(len(textbook_signals)))
     html = html.replace("__TEXTBOOK_WR__", f"{textbook_wr:.1f}")
     html = html.replace("__OVERALL_WR__", f"{overall_wr:.1f}")
+    html = html.replace("__AVG_RR__", avg_rr_str)
     html = html.replace("__AVG_DURATION__", avg_dur_str)
     html = html.replace("__FREQ_PER_DAY__", freq_per_day)
     html = html.replace("__TOTAL_COUNT__", str(total_signals))

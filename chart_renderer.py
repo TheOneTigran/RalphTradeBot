@@ -271,6 +271,8 @@ def render_signal_chart(
     orig_prev_bar: Optional[int] = None,
     orig_prev_price: Optional[float] = None,
     orig_prev_rsi: Optional[float] = None,
+    # Профессиональный торговый план (SL, TP1-TP4 по Фибоначчи)
+    trade_plan: Optional[Any] = None,
 ) -> bytes:
     """
     Рендерит свечной график с RSI для отправки в Vision AI.
@@ -394,7 +396,8 @@ def render_signal_chart(
     # ── Настройка оси цены ──
     price_range = highs.max() - lows.min()
     ax_price.set_ylim(lows.min() - price_range * 0.03, highs.max() + price_range * 0.08)
-    ax_price.set_xlim(-1, n_bars + 1)
+    xlim_right = n_bars + 28 if trade_plan is not None else n_bars + 1
+    ax_price.set_xlim(-1, xlim_right)
     ax_price.yaxis.set_major_formatter(mticker.FuncFormatter(_smart_price_fmt))
     ax_price.grid(True, color=GRID_CLR, linewidth=0.3, alpha=0.5)
     ax_price.tick_params(colors=TEXT_CLR, labelsize=7)
@@ -415,7 +418,7 @@ def render_signal_chart(
         vol_colors = [CANDLE_UP if closes[i] >= opens[i] else CANDLE_DN for i in range(n_bars)]
         ax_vol.bar(x, volumes, width=0.7, color=vol_colors, alpha=0.5)
         ax_vol.set_facecolor(BG_DARK)
-        ax_vol.set_xlim(-1, n_bars + 1)
+        ax_vol.set_xlim(-1, xlim_right)
         ax_vol.set_xticklabels([])
         ax_vol.tick_params(colors=TEXT_CLR, labelsize=6)
         ax_vol.grid(True, color=GRID_CLR, linewidth=0.3, alpha=0.3)
@@ -437,7 +440,7 @@ def render_signal_chart(
     ax_rsi.fill_between(x, 0, rsi_os, alpha=0.08, color=RSI_OS_CLR)
     
     ax_rsi.set_ylim(0, 100)
-    ax_rsi.set_xlim(-1, n_bars + 1)
+    ax_rsi.set_xlim(-1, xlim_right)
     ax_rsi.set_ylabel("RSI", fontsize=8, color=TEXT_CLR)
     ax_rsi.tick_params(colors=TEXT_CLR, labelsize=7)
     ax_rsi.grid(True, color=GRID_CLR, linewidth=0.3, alpha=0.3)
@@ -585,6 +588,42 @@ def render_signal_chart(
             wave_indices=wave_indices,
             algo_score=algo_score,
         )
+
+    # ── Отрисовка уровней торгового плана (SL и TP1-TP4 по Фибоначчи) ──
+    if trade_plan is not None and 0 <= signal_x < n_bars:
+        end_lvl_x = n_bars + 26
+        text_x = n_bars + 1
+
+        # 1. Стоп-Лосс (Красная линия)
+        ax_price.plot(
+            [signal_x, end_lvl_x], [trade_plan.sl_price, trade_plan.sl_price],
+            color='#F23645', linewidth=1.8, linestyle='-', alpha=0.9, zorder=10
+        )
+        ax_price.text(
+            text_x, trade_plan.sl_price,
+            f" [SL] {_smart_price_fmt(trade_plan.sl_price)} (-{trade_plan.sl_pct:.2f}%)",
+            color='#F23645', fontsize=7.2, fontweight='bold', va='center', zorder=11
+        )
+
+        # 2. Тейк-Профиты (TP1-TP4 по Фибоначчи)
+        tp_configs = [
+            ("TP1 (23.6%)", trade_plan.tp1_price, trade_plan.tp1_pct, "25%", '#26A69A', ':'),
+            ("TP2 (38.2%)", trade_plan.tp2_price, trade_plan.tp2_pct, "35%", '#089981', '--'),
+            ("TP3 (50.0%)", trade_plan.tp3_price, trade_plan.tp3_pct, "25%", '#00E676', '-'),
+            ("TP4 (61.8%)", trade_plan.tp4_price, trade_plan.tp4_pct, "15%", '#00E5FF', '-'),
+        ]
+        for tp_label, tp_p, tp_pct, tp_sh, tp_clr, tp_style in tp_configs:
+            ax_price.plot(
+                [signal_x, end_lvl_x], [tp_p, tp_p],
+                color=tp_clr, linewidth=1.5 if "TP4" not in tp_label else 2.0,
+                linestyle=tp_style, alpha=0.85, zorder=10
+            )
+            ax_price.text(
+                text_x, tp_p,
+                f" [{tp_label}] {_smart_price_fmt(tp_p)} (+{tp_pct:.2f}% | {tp_sh})",
+                color=tp_clr, fontsize=7.0, fontweight='bold' if "TP3" in tp_label or "TP4" in tp_label else 'normal',
+                va='center', zorder=11
+            )
     
     # ── Экспорт в PNG bytes ──
     buf = io.BytesIO()
@@ -603,6 +642,7 @@ def annotate_chart_with_analysis(
     signal_price: float,
     trade_result: str = "",
     trade_pnl: float = 0.0,
+    trade_plan: Optional[Any] = None,
 ) -> bytes:
     """
     Добавляет панель с результатами разволновки Vision AI поверх графика.
@@ -629,7 +669,7 @@ def annotate_chart_with_analysis(
     chart_w, chart_h = chart_img.size
     
     # Размеры панели
-    panel_w = 380
+    panel_w = 410
     total_w = chart_w + panel_w
     
     # Создаём составное изображение
@@ -730,6 +770,28 @@ def annotate_chart_with_analysis(
         draw.text((x0, y), f"Trade: {trade_result.upper()} ({trade_pnl:+.2f}%)", fill=tr_color, font=font_body)
         y += 22
 
+    # ── Trade Plan (Fibonacci & R:R) ──
+    if trade_plan is not None:
+        draw.line([(x0, y), (total_w - 12, y)], fill=border_color, width=1)
+        y += 7
+        draw.text((x0, y), "TRADE PLAN (FIBONACCI):", fill=(255, 215, 0), font=font_small)
+        y += 15
+        draw.text((x0 + 4, y), f"Entry: {_smart_price_fmt(trade_plan.entry_price)}", fill=text_color, font=font_small)
+        y += 13
+        draw.text((x0 + 4, y), f"SL: {_smart_price_fmt(trade_plan.sl_price)} (-{trade_plan.sl_pct:.2f}%)", fill=(239, 83, 80), font=font_small)
+        y += 13
+        draw.text((x0 + 4, y), f"TP1 (23.6%): {_smart_price_fmt(trade_plan.tp1_price)} (+{trade_plan.tp1_pct:.2f}% | 25%)", fill=(38, 166, 154), font=font_small)
+        y += 13
+        draw.text((x0 + 4, y), f"TP2 (38.2%): {_smart_price_fmt(trade_plan.tp2_price)} (+{trade_plan.tp2_pct:.2f}% | 35%)", fill=(38, 166, 154), font=font_small)
+        y += 13
+        draw.text((x0 + 4, y), f"TP3 (50.0%): {_smart_price_fmt(trade_plan.tp3_price)} (+{trade_plan.tp3_pct:.2f}% | 25%)", fill=(0, 230, 118), font=font_small)
+        y += 13
+        draw.text((x0 + 4, y), f"TP4 (61.8%): {_smart_price_fmt(trade_plan.tp4_price)} (+{trade_plan.tp4_pct:.2f}% | 15%)", fill=(0, 229, 255), font=font_small)
+        y += 14
+        imp_s = f"{'+' if signal_direction == 'SHORT' else '-'}{trade_plan.impulse_pct:.2f}%"
+        draw.text((x0 + 4, y), f"R:R: {trade_plan.rr_ratio:.1f}:1  |  Impulse: {_smart_price_fmt(trade_plan.impulse_range)} ({imp_s})", fill=(255, 215, 0), font=font_small)
+        y += 16
+
     # ── W0 Status & Origin Divergence ──
     w0_rsi = analysis.get("w0_rsi")
     w0_status = analysis.get("w0_status")
@@ -763,8 +825,13 @@ def annotate_chart_with_analysis(
         draw.text((x0, y), "WAVE IDENTIFICATION:", fill=text_color, font=font_body)
         y += 20
         
-        # Разбиваем на строки (волны часто через запятую)
-        wave_parts = waves.replace(", ", "\n").replace(",", "\n").split("\n")
+        # Разбиваем на строки без повреждения чисел с запятой (например $1,943.60)
+        if "; " in waves:
+            wave_parts = waves.split("; ")
+        elif ", " in waves:
+            wave_parts = waves.split(", ")
+        else:
+            wave_parts = waves.split("\n")
         for wp in wave_parts:
             wp = wp.strip()
             if not wp:
