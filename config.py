@@ -1,0 +1,184 @@
+"""
+config.py — Конфигурация торговой системы RalphTradeBot.
+
+Централизованные настройки: пути, API ключи, Telegram бот, пороги фильтрации,
+цветовая палитра TradingView и пресеты для топ-15 криптовалютных пар.
+"""
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# ═══════════════════════════════════════════════════════════════════════
+# Пути
+# ═══════════════════════════════════════════════════════════════════════
+BASE_DIR = Path(__file__).parent
+DATA_DIR = BASE_DIR / "data"
+RESULTS_DIR = BASE_DIR / "results"
+CONFIRMED_DIR = RESULTS_DIR / "confirmed_signals"
+REJECTED_DIR = RESULTS_DIR / "rejected_signals"
+VISION_CACHE_FILE = BASE_DIR / "vision_cache.json"
+
+for d in [RESULTS_DIR, CONFIRMED_DIR, REJECTED_DIR, DATA_DIR]:
+    d.mkdir(parents=True, exist_ok=True)
+
+load_dotenv(BASE_DIR / ".env")
+
+# ═══════════════════════════════════════════════════════════════════════
+# Telegram Bot Настройки
+# ═══════════════════════════════════════════════════════════════════════
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8590403293:AAEz9jdkfe0dkHpcTZVzTIRph18pwEWLqDo")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-5254263991")
+TELEGRAM_MIN_SCORE = 85         # В Telegram отправляются ТОЛЬКО сигналы с оценкой ИИ >= 85%
+
+# ═══════════════════════════════════════════════════════════════════════
+# Vision AI Ключи и Провайдеры
+# ═══════════════════════════════════════════════════════════════════════
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", "")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+OPENROUTER_MODELS = [
+    "nex-agi/nex-n2.5-mini:free",
+    "nex-agi/nex-n2.5-pro:free",
+]
+
+GEMINI_MODELS = [
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-1.5-flash",
+]
+
+GROQ_MODELS = [
+    "llama-3.2-90b-vision-preview",
+    "llama-3.2-11b-vision-preview",
+]
+
+# ═══════════════════════════════════════════════════════════════════════
+# Пороги фильтрации RalphTradeBot
+# ═══════════════════════════════════════════════════════════════════════
+MIN_ALGO_ELLIOTT_SCORE = 65    # Мин. балл математического детектора для отправки в Vision AI
+MIN_VISION_CONFIRM_SCORE = 70  # Мин. балл Vision AI для подтверждения в отчетах
+VISION_TIMEOUT = 60            # Таймаут запроса в секундах
+VISION_TEMPERATURE = 0.1       # Температура генерации
+
+# ═══════════════════════════════════════════════════════════════════════
+# Параметры рендера графиков
+# ═══════════════════════════════════════════════════════════════════════
+LOOKBACK_CANDLES = 200         # Количество свечей в окне графика
+CHART_WIDTH_PX = 1400          # Ширина основного полотна
+CHART_HEIGHT_PX = 700          # Высота основного полотна
+CHART_DPI = 100
+
+# Цветовая палитра TradingView Dark
+BG_DARK = "#131722"
+GRID_CLR = "#363A45"
+TEXT_CLR = "#D1D4DC"
+CANDLE_UP = "#089981"
+CANDLE_DN = "#F23645"
+RSI_CLR = "#7B61FF"
+RSI_OB_CLR = "#FF6B6B"
+RSI_OS_CLR = "#51CF66"
+SIGNAL_LINE_CLR = "#FFD700"
+ORIGIN_DIV_CLR = "#00E5FF"     # Яркий аквамариновый цвет для W0 Origin Divergence
+PIVOT_HIGH_CLR = "#EF5350"
+PIVOT_LOW_CLR = "#26A69A"
+
+# ═══════════════════════════════════════════════════════════════════════
+# Пресеты для топ-15 криптовалютных пар
+# ═══════════════════════════════════════════════════════════════════════
+TOP_15_SYMBOLS = [
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+    "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT",
+    "NEARUSDT", "BCHUSDT", "LTCUSDT", "AAVEUSDT", "1000PEPEUSDT",
+]
+
+DEFAULT_PRESETS = {
+    "BTCUSDT_5m": {
+        "symbol": "BTCUSDT", "interval": "5m",
+        "left_bars": 20, "right_bars": 2, "rsi_len": 7,
+        "rsi_ob": 69.92, "rsi_os": 26.88, "tp_pct": 2.3, "sl_pct": 3.132,
+    },
+    "BTCUSDT_15m": {
+        "symbol": "BTCUSDT", "interval": "15m",
+        "left_bars": 12, "right_bars": 3, "rsi_len": 7,
+        "rsi_ob": 68.0, "rsi_os": 26.0, "tp_pct": 2.5, "sl_pct": 3.5,
+    },
+    "ETHUSDT_5m": {
+        "symbol": "ETHUSDT", "interval": "5m",
+        "left_bars": 10, "right_bars": 3, "rsi_len": 6,
+        "rsi_ob": 68.0, "rsi_os": 25.0, "tp_pct": 1.8, "sl_pct": 3.2,
+    },
+    "ETHUSDT_15m": {
+        "symbol": "ETHUSDT", "interval": "15m",
+        "left_bars": 3, "right_bars": 9, "rsi_len": 4,
+        "rsi_ob": 65.02, "rsi_os": 21.35, "tp_pct": 1.3, "sl_pct": 6.53,
+    },
+    "SOLUSDT_15m": {
+        "symbol": "SOLUSDT", "interval": "15m",
+        "left_bars": 5, "right_bars": 5, "rsi_len": 8,
+        "rsi_ob": 71.04, "rsi_os": 33.28, "tp_pct": 1.5, "sl_pct": 3.8,
+    },
+    "BNBUSDT_15m": {
+        "symbol": "BNBUSDT", "interval": "15m",
+        "left_bars": 8, "right_bars": 4, "rsi_len": 7,
+        "rsi_ob": 68.5, "rsi_os": 26.5, "tp_pct": 1.5, "sl_pct": 3.0,
+    },
+    "XRPUSDT_15m": {
+        "symbol": "XRPUSDT", "interval": "15m",
+        "left_bars": 8, "right_bars": 4, "rsi_len": 7,
+        "rsi_ob": 70.0, "rsi_os": 28.0, "tp_pct": 1.8, "sl_pct": 3.5,
+    },
+    "DOGEUSDT_15m": {
+        "symbol": "DOGEUSDT", "interval": "15m",
+        "left_bars": 8, "right_bars": 4, "rsi_len": 7,
+        "rsi_ob": 72.0, "rsi_os": 27.0, "tp_pct": 2.0, "sl_pct": 4.0,
+    },
+    "ADAUSDT_15m": {
+        "symbol": "ADAUSDT", "interval": "15m",
+        "left_bars": 13, "right_bars": 10, "rsi_len": 8,
+        "rsi_ob": 67.61, "rsi_os": 19.74, "tp_pct": 1.2, "sl_pct": 3.8,
+    },
+    "AVAXUSDT_15m": {
+        "symbol": "AVAXUSDT", "interval": "15m",
+        "left_bars": 8, "right_bars": 4, "rsi_len": 7,
+        "rsi_ob": 69.0, "rsi_os": 26.0, "tp_pct": 1.8, "sl_pct": 3.5,
+    },
+    "LINKUSDT_15m": {
+        "symbol": "LINKUSDT", "interval": "15m",
+        "left_bars": 8, "right_bars": 4, "rsi_len": 7,
+        "rsi_ob": 69.0, "rsi_os": 26.0, "tp_pct": 1.8, "sl_pct": 3.5,
+    },
+    "SUIUSDT_15m": {
+        "symbol": "SUIUSDT", "interval": "15m",
+        "left_bars": 10, "right_bars": 4, "rsi_len": 6,
+        "rsi_ob": 69.0, "rsi_os": 24.0, "tp_pct": 2.0, "sl_pct": 3.5,
+    },
+    "NEARUSDT_15m": {
+        "symbol": "NEARUSDT", "interval": "15m",
+        "left_bars": 9, "right_bars": 6, "rsi_len": 8,
+        "rsi_ob": 72.0, "rsi_os": 25.0, "tp_pct": 1.8, "sl_pct": 4.0,
+    },
+    "BCHUSDT_15m": {
+        "symbol": "BCHUSDT", "interval": "15m",
+        "left_bars": 10, "right_bars": 6, "rsi_len": 8,
+        "rsi_ob": 67.12, "rsi_os": 24.46, "tp_pct": 1.7, "sl_pct": 3.011,
+    },
+    "LTCUSDT_15m": {
+        "symbol": "LTCUSDT", "interval": "15m",
+        "left_bars": 10, "right_bars": 5, "rsi_len": 6,
+        "rsi_ob": 68.0, "rsi_os": 24.0, "tp_pct": 1.5, "sl_pct": 3.5,
+    },
+    "AAVEUSDT_15m": {
+        "symbol": "AAVEUSDT", "interval": "15m",
+        "left_bars": 8, "right_bars": 4, "rsi_len": 7,
+        "rsi_ob": 69.0, "rsi_os": 26.0, "tp_pct": 2.0, "sl_pct": 4.0,
+    },
+    "1000PEPEUSDT_15m": {
+        "symbol": "1000PEPEUSDT", "interval": "15m",
+        "left_bars": 8, "right_bars": 4, "rsi_len": 7,
+        "rsi_ob": 72.0, "rsi_os": 25.0, "tp_pct": 2.2, "sl_pct": 4.5,
+    },
+}

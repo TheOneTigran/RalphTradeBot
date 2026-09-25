@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RalphTradeBot Backtest Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-main: #0c0f17;
+      --bg-card: #141926;
+      --bg-card-hover: #1b2234;
+      --border: #242c42;
+      --border-light: #323d5a;
+      --text-main: #e2e8f0;
+      --text-dim: #94a3b8;
+      --text-muted: #64748b;
+      --cyan: #00e5ff;
+      --gold: #ffd700;
+      --green: #089981;
+      --red: #f23645;
+      --purple: #7b61ff;
+      --font-main: 'Outfit', sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg-main);
+      color: var(--text-main);
+      font-family: var(--font-main);
+      line-height: 1.5;
+      padding: 28px;
+    }
+    .container { max-width: 1560px; margin: 0 auto; }
+    
+    /* Header */
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 28px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .brand { display: flex; align-items: center; gap: 14px; }
+    .brand-logo {
+      width: 46px; height: 46px;
+      background: linear-gradient(135deg, var(--cyan), var(--purple));
+      border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 24px; font-weight: 800; color: #000;
+      box-shadow: 0 0 24px rgba(0, 229, 255, 0.35);
+    }
+    .brand-title h1 { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; }
+    .brand-title p { font-size: 13px; color: var(--text-dim); }
+    .header-meta { text-align: right; font-size: 12px; color: var(--text-muted); font-family: var(--font-mono); }
+    .badge-tg {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 5px 12px; border-radius: 20px;
+      background: rgba(0, 229, 255, 0.12); color: var(--cyan);
+      border: 1px solid rgba(0, 229, 255, 0.3); font-size: 12px; font-weight: 600;
+    }
+
+    /* KPI Grid */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 16px;
+      margin-bottom: 28px;
+    }
+    .kpi-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px 20px;
+      position: relative;
+      overflow: hidden;
+      transition: transform 0.15s ease, border-color 0.15s ease;
+    }
+    .kpi-card:hover { transform: translateY(-2px); border-color: var(--border-light); }
+    .kpi-card::before {
+      content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+      background: var(--kpi-color, var(--cyan));
+    }
+    .kpi-label { font-size: 12px; color: var(--text-dim); text-transform: uppercase; font-weight: 600; letter-spacing: 0.5px; }
+    .kpi-value { font-size: 28px; font-weight: 800; margin: 6px 0 2px; font-family: var(--font-mono); color: var(--kpi-color, var(--text-main)); }
+    .kpi-sub { font-size: 11px; color: var(--text-muted); }
+
+    /* Filter Toolbar */
+    .toolbar {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px 20px;
+      margin-bottom: 24px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .filter-group { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .filter-label { font-size: 12px; color: var(--text-muted); font-weight: 600; margin-right: 4px; }
+    .btn-pill {
+      background: var(--bg-main);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .btn-pill:hover { border-color: var(--cyan); color: var(--text-main); }
+    .btn-pill.active { background: var(--cyan); color: #000; border-color: var(--cyan); }
+    .search-input {
+      background: var(--bg-main);
+      border: 1px solid var(--border);
+      color: var(--text-main);
+      padding: 7px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-family: var(--font-mono);
+      min-width: 220px;
+    }
+    .search-input:focus { outline: none; border-color: var(--cyan); }
+
+    /* Table */
+    .table-wrap {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow-x: auto;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th {
+      background: #111520;
+      color: var(--text-dim);
+      font-weight: 600;
+      text-align: left;
+      padding: 14px 16px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    td {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+    tr:hover td { background: var(--bg-card-hover); }
+
+    .tag-tier {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 700;
+    }
+    .tier-textbook { background: rgba(8, 153, 129, 0.18); color: var(--green); border: 1px solid rgba(8, 153, 129, 0.4); }
+    .tier-good { background: rgba(0, 229, 255, 0.15); color: var(--cyan); border: 1px solid rgba(0, 229, 255, 0.35); }
+    .tier-reject { background: rgba(242, 54, 69, 0.15); color: var(--red); border: 1px solid rgba(242, 54, 69, 0.35); }
+
+    .symbol-chip {
+      font-family: var(--font-mono); font-weight: 700;
+      padding: 3px 7px; border-radius: 4px;
+      background: rgba(255,255,255,0.06); color: var(--text-main);
+    }
+    .dir-badge { font-weight: 700; display: inline-flex; align-items: center; gap: 4px; }
+    .dir-short { color: var(--red); }
+    .dir-long { color: var(--green); }
+
+    .score-badge {
+      font-family: var(--font-mono); font-weight: 800; font-size: 14px;
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    .pnl-badge { font-family: var(--font-mono); font-weight: 700; }
+    .pnl-win { color: var(--green); }
+    .pnl-loss { color: var(--red); }
+
+    .reason-cell { max-width: 380px; font-size: 12px; color: var(--text-dim); line-height: 1.4; }
+    .btn-view {
+      background: rgba(0, 229, 255, 0.12);
+      border: 1px solid rgba(0, 229, 255, 0.35);
+      color: var(--cyan);
+      padding: 5px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .btn-view:hover { background: var(--cyan); color: #000; }
+
+    /* Modal */
+    .modal {
+      display: none; position: fixed; inset: 0; z-index: 1000;
+      background: rgba(0,0,0,0.88); backdrop-filter: blur(8px);
+      align-items: center; justify-content: center; padding: 24px;
+    }
+    .modal.active { display: flex; }
+    .modal-content {
+      max-width: 95vw; max-height: 92vh; position: relative;
+      background: var(--bg-card); border-radius: 14px; border: 1px solid var(--border-light);
+      padding: 12px; box-shadow: 0 16px 48px rgba(0,0,0,0.7);
+    }
+    .modal-content img { max-width: 100%; max-height: 84vh; border-radius: 8px; display: block; }
+    .modal-close {
+      position: absolute; top: -14px; right: -14px;
+      width: 32px; height: 32px; border-radius: 50%;
+      background: var(--red); color: #fff; border: none; font-size: 18px;
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    
+    <!-- Header -->
+    <header class="header">
+      <div class="brand">
+        <div class="brand-logo">R</div>
+        <div class="brand-title">
+          <h1>RalphTradeBot Dashboard</h1>
+          <p>Автономный аудит 5-волновых импульсов Эллиотта & RSI-дивергенций v2.1</p>
+        </div>
+      </div>
+      <div class="header-meta">
+        <div class="badge-tg">🚀 Telegram Bot: @RalphTraderBot (Score ≥ 85%)</div>
+        <div style="margin-top: 6px;">Сгенерировано: 25.09.2026 15:08</div>
+      </div>
+    </header>
+
+    <!-- KPI Grid -->
+    <section class="kpi-grid">
+      <div class="kpi-card" style="--kpi-color: var(--cyan);">
+        <div class="kpi-label">Всего сигналов</div>
+        <div class="kpi-value">4</div>
+        <div class="kpi-sub">Сканирование Топ-15 инструментов</div>
+      </div>
+      <div class="kpi-card" style="--kpi-color: var(--green);">
+        <div class="kpi-label">Эталонные (Score ≥ 85)</div>
+        <div class="kpi-value">1</div>
+        <div class="kpi-sub">Отправлены в Telegram-канал</div>
+      </div>
+      <div class="kpi-card" style="--kpi-color: var(--green);">
+        <div class="kpi-label">Win Rate (Score ≥ 85)</div>
+        <div class="kpi-value">0.0%</div>
+        <div class="kpi-sub">Высшая точность входа</div>
+      </div>
+      <div class="kpi-card" style="--kpi-color: var(--gold);">
+        <div class="kpi-label">Общий Win Rate</div>
+        <div class="kpi-value">0.0%</div>
+        <div class="kpi-sub">Все подтвержденные (Score ≥ 70)</div>
+      </div>
+      <div class="kpi-card" style="--kpi-color: var(--purple);">
+        <div class="kpi-label">Ср. время импульса</div>
+        <div class="kpi-value">15.2 ч</div>
+        <div class="kpi-sub">От точки W0 до триггера W5</div>
+      </div>
+      <div class="kpi-card" style="--kpi-color: var(--cyan);">
+        <div class="kpi-label">Частота сигналов</div>
+        <div class="kpi-value">0.1 / день</div>
+        <div class="kpi-sub">На портфель из 15 монет</div>
+      </div>
+    </section>
+
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <div class="filter-group">
+        <span class="filter-label">Категория:</span>
+        <button class="btn-pill active" onclick="setFilter('tier', 'all')">Все (4)</button>
+        <button class="btn-pill" onclick="setFilter('tier', 'textbook')">Эталонные ≥ 85 (1)</button>
+        <button class="btn-pill" onclick="setFilter('tier', 'good')">Хорошие 70-84 (0)</button>
+        <button class="btn-pill" onclick="setFilter('tier', 'reject')">Отклонённые (3)</button>
+      </div>
+
+      <div class="filter-group">
+        <span class="filter-label">Таймфрейм:</span>
+        <button class="btn-pill active" onclick="setFilter('tf', 'all')">Все ТФ</button>
+        <button class="btn-pill" onclick="setFilter('tf', '5m')">5м</button>
+        <button class="btn-pill" onclick="setFilter('tf', '15m')">15м</button>
+        <button class="btn-pill" onclick="setFilter('tf', '30m')">30м</button>
+      </div>
+
+      <input type="text" id="searchInput" class="search-input" placeholder="🔍 Поиск по монете, ТФ, тексту..." oninput="applyFilters()">
+    </div>
+
+    <!-- Table -->
+    <div class="table-wrap">
+      <table id="signalsTable">
+        <thead>
+          <tr>
+            <th>Качество</th>
+            <th>Инструмент</th>
+            <th>ТФ</th>
+            <th>Сигнал</th>
+            <th>Цена</th>
+            <th>Формирование импульса (W0 → W5)</th>
+            <th>Оценка ИИ</th>
+            <th>W0 Исток / Дивергенция</th>
+            <th>Исход</th>
+            <th>Обоснование ИИ (на русском)</th>
+            <th>График</th>
+          </tr>
+        </thead>
+        <tbody id="tableBody">
+          <tr data-tier="textbook" data-tf="15m">
+          <td><span class="tag-tier tier-textbook">Textbook ≥ 85</span></td>
+          <td><span class="symbol-chip">BTCUSDT</span></td>
+          <td><b>15m</b></td>
+          <td><span class="dir-badge dir-long">🟢 LONG</span></td>
+          <td>$73,466.40</td>
+          <td><b>15.2 ч</b> (61 бар.)</td>
+          <td><span class="score-badge" style="color: var(--green)">88/100</span></td>
+          <td>RSI: 77.4 (OVERBOUGHT)</td>
+          <td><span class='pnl-badge pnl-loss'>LOSS (-3.50%)</span></td>
+          <td class="reason-cell">Структура 0-5 выглядит достаточно чисто: W3 выражена явно, W2 и W4 корректны, а правило непересечения W1/W4 соблюдено. Разворотная дивергенция RSI в районе W3-W5 заметная и подтверждает истощение импульса, хотя по сравнению с эталоном структура несколько локально шумная.</td>
+          <td><button class='btn-view' onclick="openModal('results/confirmed_signals/BTCUSDT_15m_LONG_314_s88.png')">👁️ График</button></td>
+        </tr>
+<tr data-tier="reject" data-tf="15m">
+          <td><span class="tag-tier tier-reject">Rejected</span></td>
+          <td><span class="symbol-chip">BTCUSDT</span></td>
+          <td><b>15m</b></td>
+          <td><span class="dir-badge dir-short">🔴 SHORT</span></td>
+          <td>$61,629.60</td>
+          <td><b>22.8 ч</b> (91 бар.)</td>
+          <td><span class="score-badge" style="color: var(--red)">50/100</span></td>
+          <td>RSI: 11.6 (OVERSOLD)</td>
+          <td><span class='pnl-badge pnl-loss'>LOSS (-3.50%)</span></td>
+          <td class="reason-cell">Все Vision API временно недоступны</td>
+          <td><button class='btn-view' onclick="openModal('results/rejected_signals/BTCUSDT_15m_SHORT_933_s50.png')">👁️ График</button></td>
+        </tr>
+<tr data-tier="reject" data-tf="15m">
+          <td><span class="tag-tier tier-reject">Rejected</span></td>
+          <td><span class="symbol-chip">ETHUSDT</span></td>
+          <td><b>15m</b></td>
+          <td><span class="dir-badge dir-long">🟢 LONG</span></td>
+          <td>$1,999.39</td>
+          <td><b>13.8 ч</b> (55 бар.)</td>
+          <td><span class="score-badge" style="color: var(--red)">50/100</span></td>
+          <td>RSI: 77.6 (OVERBOUGHT) <span style='color:var(--cyan);font-weight:700;'>[W0-DIV ★]</span></td>
+          <td><span class='pnl-badge pnl-loss'>LOSS (-6.53%)</span></td>
+          <td class="reason-cell">Все Vision API временно недоступны</td>
+          <td><button class='btn-view' onclick="openModal('results/rejected_signals/ETHUSDT_15m_LONG_316_s50.png')">👁️ График</button></td>
+        </tr>
+<tr data-tier="reject" data-tf="15m">
+          <td><span class="tag-tier tier-reject">Rejected</span></td>
+          <td><span class="symbol-chip">ETHUSDT</span></td>
+          <td><b>15m</b></td>
+          <td><span class="dir-badge dir-short">🔴 SHORT</span></td>
+          <td>$1,565.29</td>
+          <td><b>7.5 ч</b> (30 бар.)</td>
+          <td><span class="score-badge" style="color: var(--red)">0/100</span></td>
+          <td>N/A</td>
+          <td><span class='pnl-badge pnl-loss'>LOSS (-6.53%)</span></td>
+          <td class="reason-cell">Отклонено алгоритмом: Структура не соответствует 5-волновому импульсу Эллиотта (нарушены базовые правила)</td>
+          <td><button class='btn-view' onclick="openModal('results/rejected_signals/ETHUSDT_15m_SHORT_920_s0.png')">👁️ График</button></td>
+        </tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div>
+
+  <!-- Modal Preview -->
+  <div id="chartModal" class="modal" onclick="closeModal()">
+    <div class="modal-content" onclick="event.stopPropagation()">
+      <button class="modal-close" onclick="closeModal()">&times;</button>
+      <img id="modalImg" src="" alt="Chart">
+    </div>
+  </div>
+
+  <script>
+    let currentTier = 'all';
+    let currentTf = 'all';
+
+    function setFilter(type, val) {
+      if (type === 'tier') currentTier = val;
+      if (type === 'tf') currentTf = val;
+
+      document.querySelectorAll(`.toolbar .btn-pill`).forEach(btn => {
+        const txt = btn.innerText.toLowerCase();
+        if (type === 'tier' && btn.getAttribute('onclick').includes('tier')) {
+          btn.classList.toggle('active', btn.getAttribute('onclick').includes(`'${val}'`));
+        }
+        if (type === 'tf' && btn.getAttribute('onclick').includes('tf')) {
+          btn.classList.toggle('active', btn.getAttribute('onclick').includes(`'${val}'`));
+        }
+      });
+      applyFilters();
+    }
+
+    function applyFilters() {
+      const q = document.getElementById('searchInput').value.toLowerCase();
+      const rows = document.querySelectorAll('#tableBody tr');
+
+      rows.forEach(r => {
+        const tier = r.getAttribute('data-tier');
+        const tf = r.getAttribute('data-tf');
+        const text = r.innerText.toLowerCase();
+
+        const matchTier = (currentTier === 'all') || (tier === currentTier);
+        const matchTf = (currentTf === 'all') || (tf === currentTf);
+        const matchSearch = !q || text.includes(q);
+
+        r.style.display = (matchTier && matchTf && matchSearch) ? '' : 'none';
+      });
+    }
+
+    function openModal(imgSrc) {
+      document.getElementById('modalImg').src = imgSrc;
+      document.getElementById('chartModal').classList.add('active');
+    }
+    function closeModal() {
+      document.getElementById('chartModal').classList.remove('active');
+    }
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+  </script>
+</body>
+</html>
