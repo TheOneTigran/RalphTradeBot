@@ -56,6 +56,8 @@ from signal_scanner import calculate_rsi_wilder
 from scipy.signal import argrelextrema
 from trade_planner import calculate_trade_plan, TradePlan
 from telegram_notifier import send_signal_to_telegram
+from analytics_db import init_db, save_signal, log_scanner_health, get_analytics_summary
+from outcome_tracker import OutcomeTrackerWorker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -395,9 +397,9 @@ def scan_live_pair(
     save_seen_signals(seen_signals)
 
     # 6. Отправка подтверждённого сигнала в Telegram (Score >= 85)
+    sent_to_tg_flag = False
+    sig_dt = df.index[p2].to_pydatetime() if isinstance(df.index, pd.DatetimeIndex) else datetime.now(timezone.utc)
     if send_tg and passed and score >= TELEGRAM_MIN_SCORE:
-        sig_dt = df.index[p2].to_pydatetime() if isinstance(df.index, pd.DatetimeIndex) else datetime.now(timezone.utc)
-        
         sent = send_signal_to_telegram(
             chart_png=annotated_png,
             symbol=symbol,
@@ -419,9 +421,49 @@ def scan_live_pair(
             w3_longest=algo_res.details.get("w3_longest", True),
         )
         if sent:
+            sent_to_tg_flag = True
             logger.info(f"🚀 СИГНАЛ УСПЕШНО ОТПРАВЛЕН В ТЕЛЕГРАМ: {symbol} {interval} {direction} (Score: {score})")
         else:
             logger.error(f"❌ Ошибка отправки сигнала в Telegram: {symbol} {interval}")
+
+    # 7. Сохранение сигнала в SQLite базу аналитики
+    try:
+        sig_data_db = {
+            "created_at": sig_dt.isoformat(),
+            "symbol": symbol,
+            "interval": interval,
+            "direction": direction,
+            "algo_score": algo_res.score,
+            "vision_score": score,
+            "vision_provider": analysis.get("provider", "unknown"),
+            "vision_reason": reason,
+            "entry_price": entry_price,
+            "sl_price": trade_plan.sl_price,
+            "tp1_price": trade_plan.tp1_price,
+            "tp2_price": trade_plan.tp2_price,
+            "tp3_price": trade_plan.tp3_price,
+            "tp4_price": trade_plan.tp4_price,
+            "rr_ratio": trade_plan.rr_ratio,
+            "impulse_pct": trade_plan.impulse_pct,
+            "sl_pct": trade_plan.sl_pct,
+            "sent_to_telegram": 1 if sent_to_tg_flag else 0,
+            "w0_price": algo_res.wave_points.get("W0"),
+            "w1_price": algo_res.wave_points.get("W1"),
+            "w2_price": algo_res.wave_points.get("W2"),
+            "w3_price": algo_res.wave_points.get("W3"),
+            "w4_price": algo_res.wave_points.get("W4"),
+            "w5_price": algo_res.wave_points.get("W5"),
+            "wave_direction": algo_res.wave_direction,
+            "origin_div": 1 if orig_div else 0,
+            "w3_longest": 1 if algo_res.details.get("w3_longest", True) else 0,
+            "dur_bars": dur_bars,
+            "dur_hours": dur_hours,
+            "bar_timestamp": bar_ts,
+        }
+        db_id = save_signal(sig_data_db)
+        logger.info(f"💾 Сигнал #{db_id} сохранён в ralph_analytics.db ({symbol} {interval} {direction})")
+    except Exception as e:
+        logger.warning(f"Ошибка сохранения сигнала в БД: {e}")
 
     return {
         "symbol": symbol, "interval": interval, "direction": direction,
@@ -449,6 +491,12 @@ def run_scanner_loop(
     logger.info(f"   Правило безубытка: вход +{BREAKEVEN_OFFSET_PCT}% после взятия TP2")
     logger.info("=" * 72)
 
+    init_db()
+
+    # Запуск фонового трекера отработки активных сигналов (проверяет TP1-TP4 / BE / SL)
+    tracker_worker = OutcomeTrackerWorker(interval_sec=scan_interval_sec)
+    tracker_worker.start()
+
     seen_signals = load_seen_signals()
     logger.info(f"Загружено ранее обработанных сигналов: {len(seen_signals)}")
 
@@ -461,6 +509,7 @@ def run_scanner_loop(
         nonlocal running
         logger.info("\n🛑 Получен сигнал завершения. Остановка сканера...")
         running = False
+        tracker_worker.stop()
 
     signal.signal(signal.SIGINT, _sig_handler)
     signal.signal(signal.SIGTERM, _sig_handler)
@@ -490,16 +539,46 @@ def run_scanner_loop(
                     logger.debug(f"Ошибка сканирования {sym} {tf}: {e}")
 
         elapsed = time.time() - t_start
+        confirmed_cnt = len([s for s in found_signals if s.get("passed") and s.get("score", 0) >= TELEGRAM_MIN_SCORE])
+        rejected_cnt = len(found_signals) - confirmed_cnt
+
         status_msg = f"⏱️ Итерация #{scan_iteration} завершена за {elapsed:.1f}с. Найдено новых сигналов: {len(found_signals)}"
         if found_signals:
             for s in found_signals:
                 status_msg += f"\n   ★ {s['symbol']} {s['interval']} {s['direction']} (Score {s['score']}, R:R {s['rr']:.1f}:1)"
         logger.info(status_msg)
 
+        # Запись метрики здоровья в БД
+        try:
+            log_scanner_health(
+                iteration=scan_iteration,
+                pairs_scanned=len(tasks),
+                candidates_found=len(found_signals),
+                signals_confirmed=confirmed_cnt,
+                signals_rejected=rejected_cnt,
+                scan_duration_sec=elapsed,
+                vision_api_status="online" if not dry_run else "dry_run",
+            )
+        except Exception as e:
+            logger.warning(f"Ошибка сохранения метрик здоровья: {e}")
+
+        # Каждые 10 итераций выводим краткую сводку аналитики базы
+        if scan_iteration % 10 == 0:
+            try:
+                stats = get_analytics_summary()
+                logger.info(
+                    f"📊 [Ralph Analytics] Сигналов: {stats['total_signals']} | "
+                    f"Активных: {stats['active_signals']} | Закрытых: {stats['closed_signals']} | "
+                    f"Win Rate: {stats['win_rate_pct']}% | TP2 hit: {stats['tp_hit_rates']['tp2_count']}"
+                )
+            except Exception as e:
+                logger.debug(f"Ошибка получения сводки: {e}")
+
         # Ожидание до следующего цикла
         sleep_time = max(1.0, scan_interval_sec - elapsed)
         time.sleep(sleep_time)
 
+    tracker_worker.stop()
     logger.info("Сканер успешно остановлен.")
 
 

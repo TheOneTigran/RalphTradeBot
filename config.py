@@ -17,6 +17,7 @@ RESULTS_DIR = BASE_DIR / "results"
 CONFIRMED_DIR = RESULTS_DIR / "confirmed_signals"
 REJECTED_DIR = RESULTS_DIR / "rejected_signals"
 VISION_CACHE_FILE = BASE_DIR / "vision_cache.json"
+ANALYTICS_DB_PATH = DATA_DIR / "ralph_analytics.db"
 
 for d in [RESULTS_DIR, CONFIRMED_DIR, REJECTED_DIR, DATA_DIR]:
     d.mkdir(parents=True, exist_ok=True)
@@ -73,6 +74,8 @@ TP_FIBO_LEVELS = [0.236, 0.382, 0.500, 0.618] # Уровни отката Фиб
 TP_SHARES = [0.25, 0.35, 0.25, 0.15]          # Доли закрытия позиции (TP1-TP4)
 BREAKEVEN_AFTER_TP2 = True     # Автоперенос стопа в безубыток при взятии TP2
 BREAKEVEN_OFFSET_PCT = 0.1     # Смещение безубытка в сторону прибыли (вход +0.1%)
+OUTCOME_TRACKER_INTERVAL_SEC = 60  # Интервал проверки отработки активных сигналов в секундах
+OUTCOME_MAX_BARS_TTL = 120     # Макс. количество баров до экспирации активного сигнала
 
 # ═══════════════════════════════════════════════════════════════════════
 # Параметры рендера графиков

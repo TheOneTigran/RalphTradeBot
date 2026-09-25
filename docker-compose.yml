@@ -1,15 +1,12 @@
 services:
   ralph-live-scanner:
-    build: .
+    image: ralphtradebot-ralph-live-scanner:latest
     container_name: ralph-live-scanner
     restart: unless-stopped
     env_file:
       - .env
     volumes:
-      - ./results:/app/results
-      - ./data:/app/data
-      - ./vision_cache.json:/app/vision_cache.json
-      - ./seen_signals.json:/app/seen_signals.json
+      - ./:/app
     logging:
       driver: "json-file"
       options:
