@@ -27,7 +27,7 @@ from config import (
     DATA_DIR, RESULTS_DIR, CONFIRMED_DIR, REJECTED_DIR,
     DEFAULT_PRESETS, TOP_15_SYMBOLS,
     MIN_ALGO_ELLIOTT_SCORE, MIN_VISION_CONFIRM_SCORE, TELEGRAM_MIN_SCORE,
-    LOOKBACK_CANDLES, SL_BUFFER_PCT, MIN_RR_RATIO, BREAKEVEN_AFTER_TP1,
+    LOOKBACK_CANDLES, SL_BUFFER_PCT, MIN_RR_RATIO, BREAKEVEN_AFTER_TP2, BREAKEVEN_OFFSET_PCT,
 )
 from elliott_detector import detect_elliott_impulse
 from chart_renderer import render_signal_chart, annotate_chart_with_analysis
@@ -197,7 +197,8 @@ def run_backtest(
                     df=df,
                     entry_bar=sig.bar_index + 1,
                     plan=trade_plan,
-                    breakeven_after_tp1=BREAKEVEN_AFTER_TP1,
+                    breakeven_after_tp2=BREAKEVEN_AFTER_TP2,
+                    breakeven_offset_pct=BREAKEVEN_OFFSET_PCT,
                 )
                 # Обновляем результаты сделки в сигнале
                 sig.trade_result = sim_res.trade_result

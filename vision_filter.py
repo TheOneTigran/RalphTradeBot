@@ -96,7 +96,7 @@ def _try_openrouter(data_url: str, prompt: str) -> Optional[Dict[str, Any]]:
                     ],
                 }],
                 "temperature": VISION_TEMPERATURE,
-                "max_tokens": 500,
+                "max_tokens": 1500,
             }
             
             resp = session.post(

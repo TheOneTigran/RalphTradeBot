@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.git/
+.venv/
+results/
+data/
+*.parquet
+RalphTradeBot backtest.html

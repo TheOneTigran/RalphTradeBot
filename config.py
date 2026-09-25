@@ -71,7 +71,8 @@ SL_BUFFER_PCT = 0.15           # Буфер за экстремумом W5 в % 
 MIN_RR_RATIO = 1.5             # Минимальное соотношение Риск/Прибыль (R:R) для допуска сигнала
 TP_FIBO_LEVELS = [0.236, 0.382, 0.500, 0.618] # Уровни отката Фибоначчи
 TP_SHARES = [0.25, 0.35, 0.25, 0.15]          # Доли закрытия позиции (TP1-TP4)
-BREAKEVEN_AFTER_TP1 = True     # Автоперенос стопа в безубыток при взятии TP1
+BREAKEVEN_AFTER_TP2 = True     # Автоперенос стопа в безубыток при взятии TP2
+BREAKEVEN_OFFSET_PCT = 0.1     # Смещение безубытка в сторону прибыли (вход +0.1%)
 
 # ═══════════════════════════════════════════════════════════════════════
 # Параметры рендера графиков
@@ -96,13 +97,24 @@ PIVOT_HIGH_CLR = "#EF5350"
 PIVOT_LOW_CLR = "#26A69A"
 
 # ═══════════════════════════════════════════════════════════════════════
-# Пресеты для топ-15 криптовалютных пар
+# Пресеты для топ-30 криптовалютных пар и таймфреймов
 # ═══════════════════════════════════════════════════════════════════════
 TOP_15_SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
     "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT",
     "NEARUSDT", "BCHUSDT", "LTCUSDT", "AAVEUSDT", "1000PEPEUSDT",
 ]
+
+TOP_30_SYMBOLS = [
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+    "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT",
+    "NEARUSDT", "BCHUSDT", "LTCUSDT", "AAVEUSDT", "1000PEPEUSDT",
+    "DOTUSDT", "1000SHIBUSDT", "TRXUSDT", "ETCUSDT", "APTUSDT",
+    "POLUSDT", "UNIUSDT", "ICPUSDT", "RENDERUSDT", "FETUSDT",
+    "ARBUSDT", "OPUSDT", "INJUSDT", "TAOUSDT", "KASUSDT",
+]
+
+LIVE_TIMEFRAMES = ["5m", "15m", "1h", "4h", "1d"]
 
 DEFAULT_PRESETS = {
     "BTCUSDT_5m": {

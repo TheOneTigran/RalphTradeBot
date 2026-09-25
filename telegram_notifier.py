@@ -89,6 +89,7 @@ def format_signal_message(
             f"🎯 TP2: <b>{tp2_s}</b> (+{trade_plan.tp2_pct:.2f}%) → Закрыть 35% (38.2% Фибо)\n"
             f"🎯 TP3: <b>{tp3_s}</b> (+{trade_plan.tp3_pct:.2f}%) → Закрыть 25% (50.0% Фибо)\n"
             f"🎯 TP4: <b>{tp4_s}</b> (+{trade_plan.tp4_pct:.2f}%) → Закрыть 15% (61.8% Фибо)\n\n"
+            f"🛡️ Безубыток: перенос SL во вход (+0.1%) после взятия TP2\n"
             f"📊 R:R (средневзвешенный): <b>{trade_plan.rr_ratio:.1f} : 1</b>\n"
             f"📈 RSI: <b>{swept_rsi:.1f} ➔ {signal_rsi:.1f}</b> (дивергенция)\n\n"
         )
@@ -136,6 +137,38 @@ def format_signal_message(
     return msg
 
 
+import threading
+import time
+
+_tg_lock = threading.Lock()
+
+def _send_tg_request(method_url: str, is_json: bool = False, retry_count: int = 3, **kwargs) -> Optional[requests.Response]:
+    """Вспомогательная функция для отправки запросов в Telegram с защитой от флуда и повторами."""
+    for attempt in range(retry_count):
+        try:
+            if is_json:
+                resp = requests.post(method_url, json=kwargs.get("json"), timeout=kwargs.get("timeout", 20))
+            else:
+                resp = requests.post(method_url, data=kwargs.get("data"), files=kwargs.get("files"), timeout=kwargs.get("timeout", 25))
+            
+            if resp.status_code == 200 and resp.json().get("ok"):
+                return resp
+            
+            # Если словили лимит Telegram 429
+            if resp.status_code == 429:
+                wait_sec = resp.json().get("parameters", {}).get("retry_after", 3)
+                logger.warning(f"⏳ Telegram Flood Control: пауза {wait_sec} сек перед повтором...")
+                time.sleep(wait_sec + 0.5)
+                continue
+            else:
+                logger.error(f"❌ Telegram API HTTP {resp.status_code}: {resp.text[:200]}")
+                time.sleep(1.0)
+        except Exception as e:
+            logger.error(f"❌ Ошибка соединения с Telegram (попытка {attempt+1}/{retry_count}): {e}")
+            time.sleep(2.0)
+    return None
+
+
 def send_signal_to_telegram(
     chart_png: bytes,
     symbol: str,
@@ -162,6 +195,7 @@ def send_signal_to_telegram(
     """
     Отправляет подтверждённый сигнал в Telegram.
     Строгий фильтр: отправляются только сигналы с score >= min_score (85%).
+    Использует потокобезопасную отправку с паузой для соблюдения Rate Limits Telegram.
     """
     if score < min_score:
         logger.info(f"⏭️ Пропуск отправки в TG: Score {score} < {min_score}% (порог Textbook)")
@@ -192,35 +226,26 @@ def send_signal_to_telegram(
     )
 
     url_photo = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
-    
-    # Если caption укладывается в лимит Telegram (1024 символа), шлем фото с caption
-    if len(caption) <= 1024:
-        files = {"photo": ("signal_chart.png", io.BytesIO(chart_png), "image/png")}
-        data = {
-            "chat_id": chat_id,
-            "caption": caption,
-            "parse_mode": "HTML",
-        }
-        try:
-            resp = requests.post(url_photo, data=data, files=files, timeout=20)
-            if resp.status_code == 200 and resp.json().get("ok"):
+    url_msg = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+
+    with _tg_lock:
+        time.sleep(1.2)  # Пауза между сообщениями для соблюдения Telegram Rate Limit
+        if len(caption) <= 1024:
+            files = {"photo": ("signal_chart.png", io.BytesIO(chart_png), "image/png")}
+            data = {"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"}
+            resp = _send_tg_request(url_photo, is_json=False, data=data, files=files)
+            if resp:
                 logger.info(f"🚀 Сигнал {symbol} {direction} (Score {score}) успешно отправлен в Telegram!")
                 return True
-            else:
-                logger.error(f"❌ Ошибка Telegram sendPhoto: {resp.text}")
-        except Exception as e:
-            logger.error(f"❌ Исключение при отправке фото в Telegram: {e}")
-    else:
-        # Если длинный текст, шлем сначала фото, затем отдельное сообщение
-        try:
+        else:
             files = {"photo": ("signal_chart.png", io.BytesIO(chart_png), "image/png")}
-            resp1 = requests.post(url_photo, data={"chat_id": chat_id}, files=files, timeout=20)
-            url_msg = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-            resp2 = requests.post(url_msg, json={"chat_id": chat_id, "text": caption, "parse_mode": "HTML"}, timeout=15)
-            if resp2.status_code == 200 and resp2.json().get("ok"):
-                logger.info(f"🚀 Сигнал {symbol} {direction} (Score {score}) успешно отправлен в Telegram (двумя частями)!")
-                return True
-        except Exception as e:
-            logger.error(f"❌ Исключение при отправке в Telegram: {e}")
+            resp1 = _send_tg_request(url_photo, is_json=False, data={"chat_id": chat_id}, files=files)
+            if resp1:
+                time.sleep(0.5)
+                resp2 = _send_tg_request(url_msg, is_json=True, json={"chat_id": chat_id, "text": caption, "parse_mode": "HTML"})
+                if resp2:
+                    logger.info(f"🚀 Сигнал {symbol} {direction} (Score {score}) успешно отправлен в Telegram (двумя частями)!")
+                    return True
 
     return False
+

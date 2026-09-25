@@ -217,11 +217,12 @@ def simulate_trade_multi_tp(
     df: pd.DataFrame,
     entry_bar: int,
     plan: TradePlan,
-    breakeven_after_tp1: bool = True,
+    breakeven_after_tp2: bool = True,
+    breakeven_offset_pct: float = 0.1,
 ) -> TradeSimulationResult:
     """
     Симулирует исполнение торгового плана с частичной фиксацией на 4 уровнях TP
-    и автоматическим переносом стопа в безубыток при достижении TP1.
+    и автоматическим переносом стопа в безубыток (+0.1%) при достижении TP2.
     """
     n = len(df)
     if entry_bar >= n:
@@ -252,6 +253,12 @@ def simulate_trade_multi_tp(
     last_exit_price = plan.entry_price
     exit_bar = n - 1
 
+    # Уровень безубытка (вход + 0.1% в сторону профита)
+    if plan.direction == "SHORT":
+        be_sl_price = plan.entry_price * (1.0 - breakeven_offset_pct / 100.0)
+    else:
+        be_sl_price = plan.entry_price * (1.0 + breakeven_offset_pct / 100.0)
+
     for b in range(entry_bar, n):
         o = open_p[b]
         h = high_p[b]
@@ -265,8 +272,8 @@ def simulate_trade_multi_tp(
                 last_exit_price = actual_exit
                 exit_bar = b
                 
-                if tp1_hit and breakeven_after_tp1:
-                    # Стоп был в безубытке (entry_price)
+                if tp2_hit and breakeven_after_tp2:
+                    # Стоп был перенесен в зону безубытка (вход +0.1% профита)
                     be_hit = True
                     be_pnl = (plan.entry_price - actual_exit) / plan.entry_price * 100.0
                     accumulated_pnl += rem_share * be_pnl
@@ -285,8 +292,6 @@ def simulate_trade_multi_tp(
                 accumulated_pnl += plan.tp1_share * gain1
                 rem_share -= plan.tp1_share
                 last_exit_price = plan.tp1_price
-                if breakeven_after_tp1:
-                    current_sl = plan.entry_price
 
             if not tp2_hit and l <= plan.tp2_price:
                 tp2_hit = True
@@ -294,6 +299,9 @@ def simulate_trade_multi_tp(
                 accumulated_pnl += plan.tp2_share * gain2
                 rem_share -= plan.tp2_share
                 last_exit_price = plan.tp2_price
+                # После касания TP2 SL переносится в безубыток (вход +0.1%)
+                if breakeven_after_tp2:
+                    current_sl = be_sl_price
 
             if not tp3_hit and l <= plan.tp3_price:
                 tp3_hit = True
@@ -318,7 +326,8 @@ def simulate_trade_multi_tp(
                 last_exit_price = actual_exit
                 exit_bar = b
                 
-                if tp1_hit and breakeven_after_tp1:
+                if tp2_hit and breakeven_after_tp2:
+                    # Стоп был перенесен в зону безубытка (вход +0.1% профита)
                     be_hit = True
                     be_pnl = (actual_exit - plan.entry_price) / plan.entry_price * 100.0
                     accumulated_pnl += rem_share * be_pnl
@@ -337,8 +346,6 @@ def simulate_trade_multi_tp(
                 accumulated_pnl += plan.tp1_share * gain1
                 rem_share -= plan.tp1_share
                 last_exit_price = plan.tp1_price
-                if breakeven_after_tp1:
-                    current_sl = plan.entry_price
 
             if not tp2_hit and h >= plan.tp2_price:
                 tp2_hit = True
@@ -346,6 +353,9 @@ def simulate_trade_multi_tp(
                 accumulated_pnl += plan.tp2_share * gain2
                 rem_share -= plan.tp2_share
                 last_exit_price = plan.tp2_price
+                # После касания TP2 SL переносится в безубыток (вход +0.1%)
+                if breakeven_after_tp2:
+                    current_sl = be_sl_price
 
             if not tp3_hit and h >= plan.tp3_price:
                 tp3_hit = True
