@@ -37,6 +37,23 @@ def _fmt_p(p: float) -> str:
         return f"${p:,.6f}"
 
 
+def _fmt_vol(v: float) -> str:
+    """Форматирует объем в USDT."""
+    return f"${v:,.1f}"
+
+
+def _fmt_coins(amount: float) -> str:
+    """Форматирует количество монет."""
+    if amount >= 1000.0:
+        return f"{amount:,.0f}"
+    elif amount >= 10.0:
+        return f"{amount:,.2f}"
+    elif amount >= 1.0:
+        return f"{amount:,.3f}"
+    else:
+        return f"{amount:,.5f}"
+
+
 def format_signal_message(
     symbol: str,
     interval: str,
@@ -62,14 +79,14 @@ def format_signal_message(
     dt_str = dt.strftime("%d.%m.%Y в %H:%M")
     
     if direction == "SHORT":
-        header = "🔴 <b>МЕДВЕЖИЙ ИМПУЛЬС ЗАВЕРШЁН</b>"
+        header = "🔴 <b>МЕДВЕЖИЙ ИМПУЛЬС ЗАВЕРШЁН (W5)</b>"
         dir_badge = "▼ <b>SHORT</b>"
-        sl_note = "└ За экстремумом W5"
+        sl_note = "└ Стоп-Маркет за пиком W5"
         imp_sign = "+"
     else:
-        header = "🟢 <b>БЫЧИЙ ИМПУЛЬС ЗАВЕРШЁН</b>"
+        header = "🟢 <b>БЫЧИЙ ИМПУЛЬС ЗАВЕРШЁН (W5)</b>"
         dir_badge = "▲ <b>LONG</b>"
-        sl_note = "└ За экстремумом W5"
+        sl_note = "└ Стоп-Маркет за лоу W5"
         imp_sign = "-"
 
     # Если есть конфликт активной сделки — выводим информационную плашку
@@ -81,6 +98,8 @@ def format_signal_message(
             f"──────────────────────────\n\n"
         )
 
+    fail_fast_str = "45 минут (3 свечи)" if interval == "15m" else ("3 часа (3 свечи)" if interval == "1h" else "3 свечи")
+
     # Если есть TradePlan
     if trade_plan is not None:
         entry_s = _fmt_p(trade_plan.entry_price)
@@ -88,18 +107,34 @@ def format_signal_message(
         tp1_s = _fmt_p(trade_plan.tp1_price)
         tp2_s = _fmt_p(trade_plan.tp2_price)
         tp3_s = _fmt_p(trade_plan.tp3_price)
-        tp4_s = _fmt_p(trade_plan.tp4_price)
+
+        pos_vol_str = _fmt_vol(getattr(trade_plan, 'pos_size_usd', 0.0))
+        coins_str = _fmt_coins(getattr(trade_plan, 'pos_size_coins', 0.0))
+        margin_str = f"${getattr(trade_plan, 'margin_usd', 0.0):.1f}"
+        lev = getattr(trade_plan, 'leverage', 10)
+        risk_usd = getattr(trade_plan, 'risk_budget_usd', 10.0)
+
+        tp1_vol_s = _fmt_vol(getattr(trade_plan, 'tp1_size_usd', 0.0))
+        tp1_coins_s = _fmt_coins(getattr(trade_plan, 'tp1_size_coins', 0.0))
+        tp2_vol_s = _fmt_vol(getattr(trade_plan, 'tp2_size_usd', 0.0))
+        tp2_coins_s = _fmt_coins(getattr(trade_plan, 'tp2_size_coins', 0.0))
 
         plan_block = (
-            f"━━━ <b>ТОРГОВЫЙ ПЛАН</b> ━━━\n\n"
-            f"{dir_badge} │ Вход: <b>{entry_s}</b>\n"
-            f"🛑 SL: <b>{sl_s}</b> (−{trade_plan.sl_pct:.2f}%)\n"
+            f"━━━ 🎯 <b>КУДА И ЧТО ВЫСТАВЛЯТЬ (ОРДЕРА):</b> ━━━\n\n"
+            f"1️⃣ {dir_badge} │ Вход: <b>{entry_s}</b>\n"
+            f"   └ Объем: <b>{pos_vol_str}</b> (<b>{coins_str}</b> монет)\n"
+            f"   └ Реком. маржа: <b>{margin_str}</b> (плечо {lev}x / риск ${risk_usd:.1f})\n\n"
+            f"2️⃣ 🛑 <b>STOP LOSS:</b> <b>{sl_s}</b> (−{trade_plan.sl_pct:.2f}%)\n"
             f"   {sl_note}\n\n"
-            f"🎯 TP1: <b>{tp1_s}</b> (+{trade_plan.tp1_pct:.2f}%) → Закрыть 25% (23.6% Фибо)\n"
-            f"🎯 TP2: <b>{tp2_s}</b> (+{trade_plan.tp2_pct:.2f}%) → Закрыть 35% (38.2% Фибо)\n"
-            f"🎯 TP3: <b>{tp3_s}</b> (+{trade_plan.tp3_pct:.2f}%) → Закрыть 25% (50.0% Фибо)\n"
-            f"🎯 TP4: <b>{tp4_s}</b> (+{trade_plan.tp4_pct:.2f}%) → Закрыть 15% (61.8% Фибо)\n\n"
-            f"🛡️ Безубыток: перенос SL во вход (+0.1%) после взятия TP2\n"
+            f"3️⃣ 🎯 <b>TP1 (23.6% Фибо):</b> <b>{tp1_s}</b> (+{trade_plan.tp1_pct:.2f}%)\n"
+            f"   └ Тип: Limit │ <b>Закрыть {int(trade_plan.tp1_share*100)}%</b> ({tp1_vol_s} / {tp1_coins_s} монет)\n\n"
+            f"4️⃣ 🎯 <b>TP2 (38.2% Фибо):</b> <b>{tp2_s}</b> (+{trade_plan.tp2_pct:.2f}%)\n"
+            f"   └ Тип: Limit │ <b>Закрыть {int(trade_plan.tp2_share*100)}%</b> ({tp2_vol_s} / {tp2_coins_s} монет)\n\n"
+            f"5️⃣ 🏃 <b>Остаток {int(trade_plan.tp3_share*100)}% (Раннер):</b>\n"
+            f"   └ Цель TP3: <b>{tp3_s}</b> или трейлинг по Chandelier ATR\n\n"
+            f"━━━ 📋 <b>ЧТО ДЕЛАТЬ ПОСЛЕ ВХОДА (РЕГЛАМЕНТ):</b> ━━━\n\n"
+            f"🛡️ <b>Безубыток:</b> Бот пришлёт ответ при взятии TP2 ➔ перенести SL в БУ (+0.1%).\n"
+            f"⏱️ <b>Таймер {fail_fast_str}:</b> Бот сам отслеживает свечи. Если импульс угаснет (< +0.4R), бот пришлёт команду закрыть остаток по рынку (Fail-Fast).\n\n"
             f"📊 R:R (средневзвешенный): <b>{trade_plan.rr_ratio:.1f} : 1</b>\n"
             f"📈 RSI: <b>{swept_rsi:.1f} ➔ {signal_rsi:.1f}</b> (дивергенция)\n\n"
         )
@@ -136,8 +171,8 @@ def format_signal_message(
     msg = (
         f"{conflict_banner}"
         f"{header}\n\n"
-        f"📌 <code>{symbol}</code> (Crypto)\n"
-        f"⏱️ <b>{interval}</b>\n\n"
+        f"📌 <code>{symbol}</code> (Crypto Futures)\n"
+        f"⏱️ Таймфрейм: <b>{interval}</b>\n\n"
         f"{plan_block}"
         f"{w_struct_block}"
         f"━━━ <b>ОБОСНОВАНИЕ</b> ━━━\n\n"
@@ -146,6 +181,7 @@ def format_signal_message(
         f"📅 {dt_str}"
     )
     return msg
+
 
 
 import threading
@@ -203,19 +239,20 @@ def send_signal_to_telegram(
     bot_token: str = TELEGRAM_BOT_TOKEN,
     chat_id: str = TELEGRAM_CHAT_ID,
     min_score: int = TELEGRAM_MIN_SCORE,
-) -> bool:
+) -> Optional[int]:
     """
     Отправляет подтверждённый сигнал в Telegram.
     Строгий фильтр: отправляются только сигналы с score >= min_score (85%).
     Использует потокобезопасную отправку с паузой для соблюдения Rate Limits Telegram.
+    Возвращает message_id отправленного сообщения для последующих ответов-сопровождения.
     """
     if score < min_score:
         logger.info(f"⏭️ Пропуск отправки в TG: Score {score} < {min_score}% (порог Textbook)")
-        return False
+        return None
 
     if not bot_token or not chat_id:
         logger.warning("⚠️ Не заданы TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID")
-        return False
+        return None
 
     caption = format_signal_message(
         symbol=symbol,
@@ -248,8 +285,9 @@ def send_signal_to_telegram(
             data = {"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"}
             resp = _send_tg_request(url_photo, is_json=False, data=data, files=files)
             if resp:
-                logger.info(f"🚀 Сигнал {symbol} {direction} (Score {score}) успешно отправлен в Telegram!")
-                return True
+                msg_id = resp.json().get("result", {}).get("message_id")
+                logger.info(f"🚀 Сигнал {symbol} {direction} (Score {score}) успешно отправлен в Telegram! (MsgID: {msg_id})")
+                return msg_id
         else:
             files = {"photo": ("signal_chart.png", io.BytesIO(chart_png), "image/png")}
             resp1 = _send_tg_request(url_photo, is_json=False, data={"chat_id": chat_id}, files=files)
@@ -257,8 +295,42 @@ def send_signal_to_telegram(
                 time.sleep(0.5)
                 resp2 = _send_tg_request(url_msg, is_json=True, json={"chat_id": chat_id, "text": caption, "parse_mode": "HTML"})
                 if resp2:
-                    logger.info(f"🚀 Сигнал {symbol} {direction} (Score {score}) успешно отправлен в Telegram (двумя частями)!")
-                    return True
+                    msg_id = resp2.json().get("result", {}).get("message_id")
+                    logger.info(f"🚀 Сигнал {symbol} {direction} (Score {score}) успешно отправлен в Telegram (двумя частями, MsgID: {msg_id})!")
+                    return msg_id
 
-    return False
+    return None
+
+
+def send_trade_update_reply(
+    reply_to_message_id: int,
+    text: str,
+    bot_token: str = TELEGRAM_BOT_TOKEN,
+    chat_id: str = TELEGRAM_CHAT_ID,
+) -> Optional[int]:
+    """
+    Отправляет уведомление-сопровождение (TP, SL, БУ, Fail-Fast)
+    строго в виде ОТВЕТА (reply) на оригинальный сигнал.
+    """
+    if not bot_token or not chat_id or not reply_to_message_id:
+        return None
+
+    url_msg = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "reply_to_message_id": reply_to_message_id,
+        "allow_sending_without_reply": True,
+    }
+
+    with _tg_lock:
+        time.sleep(0.5)
+        resp = _send_tg_request(url_msg, is_json=True, json=payload)
+        if resp and resp.status_code == 200:
+            msg_id = resp.json().get("result", {}).get("message_id")
+            logger.info(f"💬 Ответ на сигнал #{reply_to_message_id} успешно доставлен в Telegram (MsgID: {msg_id})")
+            return msg_id
+
+    return None
 

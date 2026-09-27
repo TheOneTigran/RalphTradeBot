@@ -42,7 +42,7 @@ BASE_DIR = Path(__file__).parent
 sys.path.insert(0, str(BASE_DIR))
 
 from config import (
-    TOP_30_SYMBOLS, LIVE_TIMEFRAMES,
+    TOP_30_SYMBOLS, ACTIVE_SYMBOLS, LIVE_TIMEFRAMES,
     MIN_ALGO_ELLIOTT_SCORE, MIN_VISION_CONFIRM_SCORE, TELEGRAM_MIN_SCORE,
     LOOKBACK_CANDLES, SL_BUFFER_PCT, MIN_RR_RATIO,
     BREAKEVEN_AFTER_TP2, BREAKEVEN_OFFSET_PCT,
@@ -518,8 +518,9 @@ def scan_live_pair(
     # 6. Отправка подтверждённого сигнала в Telegram (Score >= 85)
     sent_to_tg_flag = False
     sig_dt = df.index[p2].to_pydatetime() if isinstance(df.index, pd.DatetimeIndex) else datetime.now(timezone.utc)
+    tg_msg_id = None
     if send_tg and passed and score >= TELEGRAM_MIN_SCORE:
-        sent = send_signal_to_telegram(
+        tg_msg_id = send_signal_to_telegram(
             chart_png=annotated_png,
             symbol=symbol,
             interval=interval,
@@ -540,9 +541,9 @@ def scan_live_pair(
             w3_longest=algo_res.details.get("w3_longest", True),
             conflict_note=conflict_note,
         )
-        if sent:
+        if tg_msg_id:
             sent_to_tg_flag = True
-            logger.info(f"🚀 СИГНАЛ УСПЕШНО ОТПРАВЛЕН В ТЕЛЕГРАМ: {symbol} {interval} {direction} (Score: {score})")
+            logger.info(f"🚀 СИГНАЛ УСПЕШНО ОТПРАВЛЕН В ТЕЛЕГРАМ: {symbol} {interval} {direction} (Score: {score}, MsgID: {tg_msg_id})")
         else:
             logger.error(f"❌ Ошибка отправки сигнала в Telegram: {symbol} {interval}")
 
@@ -567,6 +568,10 @@ def scan_live_pair(
             "impulse_pct": trade_plan.impulse_pct,
             "sl_pct": trade_plan.sl_pct,
             "sent_to_telegram": 1 if sent_to_tg_flag else 0,
+            "telegram_msg_id": tg_msg_id,
+            "pos_size_usd": trade_plan.pos_size_usd,
+            "pos_size_coins": trade_plan.pos_size_coins,
+            "risk_budget_usd": trade_plan.risk_budget_usd,
             "w0_price": algo_res.wave_points.get("W0"),
             "w1_price": algo_res.wave_points.get("W1"),
             "w2_price": algo_res.wave_points.get("W2"),
@@ -581,7 +586,7 @@ def scan_live_pair(
             "bar_timestamp": bar_ts,
             "w5_price": p2_price,
         }
-        db_id = save_signal(sig_data_db, is_active_trade=is_active_trade)
+        db_id = save_signal(sig_data_db, is_active_trade=is_active_trade, telegram_msg_id=tg_msg_id)
         trade_label = "активная сделка" if is_active_trade else "инфо-сигнал (без открытия в трекере)"
         logger.info(f"💾 Сигнал #{db_id} сохранён в ralph_analytics.db ({symbol} {interval} {direction} — {trade_label})")
     except Exception as e:
@@ -727,7 +732,7 @@ def main():
 
     args = parser.parse_args()
 
-    symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()] if args.symbols else TOP_30_SYMBOLS
+    symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()] if args.symbols else ACTIVE_SYMBOLS
     timeframes = [t.strip().lower() for t in args.timeframes.split(",") if t.strip()] if args.timeframes else LIVE_TIMEFRAMES
 
     run_scanner_loop(

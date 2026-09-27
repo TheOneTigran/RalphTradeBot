@@ -71,10 +71,16 @@ VISION_TEMPERATURE = 0.1       # Температура генерации
 SL_BUFFER_PCT = 0.15           # Буфер за экстремумом W5 в % (защита от шпильки)
 MIN_RR_RATIO = 1.5             # Минимальное соотношение Риск/Прибыль (R:R) для допуска сигнала
 TP_FIBO_LEVELS = [0.236, 0.382, 0.500, 0.618] # Уровни отката Фибоначчи
-TP_SHARES = [0.25, 0.35, 0.25, 0.15]          # Доли закрытия позиции (TP1-TP4)
+ACTIVE_MODEL = "Model_E"       # Выбранная эталонная модель: Quant Master Hybrid
+TP_SHARES = [0.40, 0.30, 0.30] # Model E: 40% TP1, 30% TP2, 30% Runner/Chandelier
 BREAKEVEN_AFTER_TP2 = True     # Автоперенос стопа в безубыток при взятии TP2
 BREAKEVEN_OFFSET_PCT = 0.1     # Смещение безубытка в сторону прибыли (вход +0.1%)
-OUTCOME_TRACKER_INTERVAL_SEC = 60  # Интервал проверки отработки активных сигналов в секундах
+FAIL_FAST_BARS = 3             # Временной стоп: 3 свечи (45 мин для 15m, 3 часа для 1h)
+FAIL_FAST_MIN_R = 0.4          # Минимальная прибыль в R на баре 3 (иначе выход по рынку)
+RISK_BUDGET_USD = 10.0         # Базовый риск на сделку в $ (1% от $1,000)
+DEFAULT_LEVERAGE = 10          # Плечо для расчета рекомендуемой маржи в сигнале
+COMMISSION_RATE = 0.001        # Комиссия биржи 0.1% Taker (0.2% roundtrip)
+OUTCOME_TRACKER_INTERVAL_SEC = 30  # Интервал проверки отработки активных сигналов в секундах
 OUTCOME_MAX_BARS_TTL = 120     # Макс. количество баров до экспирации активного сигнала
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -100,8 +106,15 @@ PIVOT_HIGH_CLR = "#EF5350"
 PIVOT_LOW_CLR = "#26A69A"
 
 # ═══════════════════════════════════════════════════════════════════════
-# Пресеты для топ-30 криптовалютных пар и таймфреймов
+# Списки криптовалютных пар и таймфреймов
 # ═══════════════════════════════════════════════════════════════════════
+# ТОП-12 лидеров по результатам бэктестов за последний месяц (PF 2.4 - 12.0)
+TOP_12_LEADERS = [
+    "NEARUSDT", "SUIUSDT", "KASUSDT", "DOGEUSDT", "UNIUSDT",
+    "APTUSDT", "OPUSDT", "1000PEPEUSDT", "LTCUSDT", "BCHUSDT",
+    "TAOUSDT", "ICPUSDT",
+]
+
 TOP_15_SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
     "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT",
@@ -117,7 +130,11 @@ TOP_30_SYMBOLS = [
     "ARBUSDT", "OPUSDT", "INJUSDT", "TAOUSDT", "KASUSDT",
 ]
 
-LIVE_TIMEFRAMES = ["5m", "15m", "1h", "4h", "1d"]
+# Активный рабочий пул для сканера (ТОП-12 лидеров)
+ACTIVE_SYMBOLS = TOP_12_LEADERS
+
+# Рабочие таймфреймы для ручной торговли (15m и 1h)
+LIVE_TIMEFRAMES = ["15m", "1h"]
 
 DEFAULT_PRESETS = {
     "BTCUSDT_5m": {

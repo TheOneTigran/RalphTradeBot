@@ -1,0 +1,51 @@
+{
+  "strategy_name": "Exit_Model_C_Chandelier_Trailing",
+  "total_signals": 186,
+  "executed_trades": 131,
+  "filtered_signals": 55,
+  "wins": 92,
+  "losses": 39,
+  "breakevens": 0,
+  "win_rate_pct": 70.2,
+  "full_win_rate_pct": 70.2,
+  "profit_factor": 2.49,
+  "total_net_pnl_pct": 75.69,
+  "initial_deposit_usd": 1000.0,
+  "final_deposit_usd": 1756.87,
+  "net_profit_usd": 756.87,
+  "total_fees_usd": 406.23,
+  "expectancy_r": 0.58,
+  "max_drawdown_pct": 5.25,
+  "sharpe_ratio": 6.07,
+  "sortino_ratio": 105.24,
+  "avg_mfe_pct": 1.85,
+  "avg_mae_pct": 0.47,
+  "avg_mfe_r": 2.71,
+  "avg_mae_r": 0.62,
+  "avg_bars_held": 13.9,
+  "avg_slippage_tax_pct": 0.0,
+  "losses_saved_vs_baseline": 0,
+  "mfe_mae_analysis": {
+    "total_analyzed": 131,
+    "winners_count": 92,
+    "losers_count": 39,
+    "win_mae_percentiles_r": {
+      "p50_median": 0.23,
+      "p75": 0.43,
+      "p90": 0.56,
+      "p95": 0.63
+    },
+    "all_mfe_percentiles_r": {
+      "p25": 1.05,
+      "p50_median": 2.22,
+      "p75": 3.56,
+      "p90": 6.61
+    },
+    "mfe_reach_rates_pct": {
+      "reached_1r_pct": 78.6,
+      "reached_2r_pct": 54.2,
+      "reached_3r_pct": 29.0,
+      "reached_4r_pct": 20.6
+    }
+  }
+}

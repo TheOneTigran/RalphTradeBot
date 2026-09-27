@@ -39,6 +39,9 @@ data/*.db-wal
 data/*.db-shm
 data/*.sqlite
 data/*.sqlite3
+*.pkl
+cache_month_5m/
+strategies_lab/cache_month_5m/
 !data/.gitkeep
 
 # Generated Backtest Charts (keep directory structure)

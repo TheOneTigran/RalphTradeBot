@@ -21,6 +21,14 @@ from typing import Dict, Any, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from config import (
+    TP_SHARES,
+    RISK_BUDGET_USD,
+    DEFAULT_LEVERAGE,
+    SL_BUFFER_PCT,
+    MIN_RR_RATIO,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,9 +65,22 @@ class TradePlan:
     rr_ratio: float                 # Средневзвешенный R:R
     is_viable: bool                 # R:R >= min_rr_ratio
     
+    # Расчёт объёмов и маржи (для моментального выставления ордеров)
+    risk_budget_usd: float = 10.0   # Риск в $ на сделку
+    leverage: int = 10              # Рекомендуемое кредитное плечо
+    pos_size_usd: float = 0.0       # Полный объем позиции в USDT
+    pos_size_coins: float = 0.0     # Полный объем позиции в монетах
+    margin_usd: float = 0.0         # Необходимая маржа при заданном плече
+    tp1_size_usd: float = 0.0       # Объем для закрытия на TP1 в USDT
+    tp1_size_coins: float = 0.0     # Объем для закрытия на TP1 в монетах
+    tp2_size_usd: float = 0.0       # Объем для закрытия на TP2 в USDT
+    tp2_size_coins: float = 0.0     # Объем для закрытия на TP2 в монетах
+    tp3_size_usd: float = 0.0       # Объем для закрытия на TP3 в USDT
+    tp3_size_coins: float = 0.0     # Объем для закрытия на TP3 в монетах
+    
     # Параметры импульса
-    impulse_range: float            # |W5 - W0| в валюте
-    impulse_pct: float              # |W5 - W0| / W0 * 100% (длина импульса в %)
+    impulse_range: float = 0.0      # |W5 - W0| в валюте
+    impulse_pct: float = 0.0        # |W5 - W0| / W0 * 100% (длина импульса в %)
     
     # Волновые координаты
     w0_price: float = 0.0
@@ -114,10 +135,10 @@ def calculate_trade_plan(
     w0_base = max(w0, 1e-9)
     impulse_pct = (impulse_range / w0_base) * 100.0
 
-    tp1_share = 0.25
-    tp2_share = 0.35
-    tp3_share = 0.25
-    tp4_share = 0.15
+    tp1_share = TP_SHARES[0] if len(TP_SHARES) > 0 else 0.40
+    tp2_share = TP_SHARES[1] if len(TP_SHARES) > 1 else 0.30
+    tp3_share = TP_SHARES[2] if len(TP_SHARES) > 2 else 0.30
+    tp4_share = TP_SHARES[3] if len(TP_SHARES) > 3 else 0.00
 
     if direction == "SHORT":
         # Бычий импульс завершился на W5 (хай). Входим в SHORT.
@@ -180,6 +201,22 @@ def calculate_trade_plan(
     rr_ratio = (weighted_reward_pct / sl_pct) if sl_pct > 1e-6 else 0.0
     is_viable = (rr_ratio >= min_rr_ratio) and (sl_pct > 0.0)
 
+    # Расчет точных объемов позиции и маржи
+    risk_budget = float(RISK_BUDGET_USD)
+    lev = int(DEFAULT_LEVERAGE)
+    pos_size_usd = (risk_budget / (sl_pct / 100.0)) if sl_pct > 0 else 0.0
+    pos_size_coins = (pos_size_usd / entry_price) if entry_price > 0 else 0.0
+    margin_usd = pos_size_usd / max(1, lev)
+
+    tp1_size_usd = pos_size_usd * tp1_share
+    tp1_size_coins = pos_size_coins * tp1_share
+
+    tp2_size_usd = pos_size_usd * tp2_share
+    tp2_size_coins = pos_size_coins * tp2_share
+
+    tp3_size_usd = pos_size_usd * tp3_share
+    tp3_size_coins = pos_size_coins * tp3_share
+
     return TradePlan(
         direction=direction,
         entry_price=entry_price,
@@ -201,6 +238,17 @@ def calculate_trade_plan(
         weighted_reward_pct=weighted_reward_pct,
         rr_ratio=rr_ratio,
         is_viable=is_viable,
+        risk_budget_usd=risk_budget,
+        leverage=lev,
+        pos_size_usd=pos_size_usd,
+        pos_size_coins=pos_size_coins,
+        margin_usd=margin_usd,
+        tp1_size_usd=tp1_size_usd,
+        tp1_size_coins=tp1_size_coins,
+        tp2_size_usd=tp2_size_usd,
+        tp2_size_coins=tp2_size_coins,
+        tp3_size_usd=tp3_size_usd,
+        tp3_size_coins=tp3_size_coins,
         impulse_range=impulse_range,
         impulse_pct=impulse_pct,
         w0_price=w0,

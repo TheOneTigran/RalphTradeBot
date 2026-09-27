@@ -1,0 +1,51 @@
+{
+  "strategy_name": "Exit_Model_E_Quant_Master_Hybrid",
+  "total_signals": 186,
+  "executed_trades": 131,
+  "filtered_signals": 55,
+  "wins": 82,
+  "losses": 48,
+  "breakevens": 1,
+  "win_rate_pct": 63.4,
+  "full_win_rate_pct": 62.6,
+  "profit_factor": 2.86,
+  "total_net_pnl_pct": 69.55,
+  "initial_deposit_usd": 1000.0,
+  "final_deposit_usd": 1695.46,
+  "net_profit_usd": 695.46,
+  "total_fees_usd": 406.2,
+  "expectancy_r": 0.53,
+  "max_drawdown_pct": 3.92,
+  "sharpe_ratio": 6.04,
+  "sortino_ratio": 15.52,
+  "avg_mfe_pct": 1.76,
+  "avg_mae_pct": 0.38,
+  "avg_mfe_r": 2.59,
+  "avg_mae_r": 0.51,
+  "avg_bars_held": 14.1,
+  "avg_slippage_tax_pct": 0.0,
+  "losses_saved_vs_baseline": 0,
+  "mfe_mae_analysis": {
+    "total_analyzed": 131,
+    "winners_count": 82,
+    "losers_count": 49,
+    "win_mae_percentiles_r": {
+      "p50_median": 0.22,
+      "p75": 0.44,
+      "p90": 0.56,
+      "p95": 0.81
+    },
+    "all_mfe_percentiles_r": {
+      "p25": 0.85,
+      "p50_median": 1.83,
+      "p75": 3.54,
+      "p90": 6.66
+    },
+    "mfe_reach_rates_pct": {
+      "reached_1r_pct": 70.2,
+      "reached_2r_pct": 48.9,
+      "reached_3r_pct": 29.8,
+      "reached_4r_pct": 19.1
+    }
+  }
+}

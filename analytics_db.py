@@ -53,6 +53,35 @@ def db_session(db_path: Path | str = ANALYTICS_DB_PATH):
         conn.close()
 
 
+def _migrate_schema(conn: sqlite3.Connection):
+    """Безопасная автомиграция схемы базы данных."""
+    try:
+        # Проверяем колонку telegram_msg_id в signals
+        cols_sig = [r[1] for r in conn.execute("PRAGMA table_info(signals)").fetchall()]
+        if "telegram_msg_id" not in cols_sig:
+            conn.execute("ALTER TABLE signals ADD COLUMN telegram_msg_id INTEGER;")
+
+        # Проверяем колонки в signal_outcomes
+        cols_out = [r[1] for r in conn.execute("PRAGMA table_info(signal_outcomes)").fetchall()]
+        add_cols = [
+            ("pos_size_usd", "REAL DEFAULT 0.0"),
+            ("pos_size_coins", "REAL DEFAULT 0.0"),
+            ("risk_usd", "REAL DEFAULT 10.0"),
+            ("net_pnl_usd", "REAL DEFAULT 0.0"),
+            ("fail_fast_triggered", "INTEGER DEFAULT 0"),
+            ("fail_fast_hit_at", "TEXT"),
+            ("notified_tp1", "INTEGER DEFAULT 0"),
+            ("notified_tp2", "INTEGER DEFAULT 0"),
+            ("notified_closed", "INTEGER DEFAULT 0"),
+            ("notified_fail_fast", "INTEGER DEFAULT 0"),
+        ]
+        for col_name, col_def in add_cols:
+            if col_name not in cols_out:
+                conn.execute(f"ALTER TABLE signal_outcomes ADD COLUMN {col_name} {col_def};")
+    except Exception as e:
+        logger.warning(f"Предупреждение при миграции схемы: {e}")
+
+
 def init_db(db_path: Path | str = ANALYTICS_DB_PATH):
     """Инициализирует таблицы базы данных и индексы."""
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -80,6 +109,7 @@ def init_db(db_path: Path | str = ANALYTICS_DB_PATH):
                 impulse_pct REAL NOT NULL,
                 sl_pct REAL NOT NULL,
                 sent_to_telegram INTEGER DEFAULT 0,
+                telegram_msg_id INTEGER,
                 w0_price REAL,
                 w1_price REAL,
                 w2_price REAL,
@@ -112,8 +142,18 @@ def init_db(db_path: Path | str = ANALYTICS_DB_PATH):
                 sl_hit_at TEXT,
                 be_triggered INTEGER DEFAULT 0,
                 be_hit_at TEXT,
-                status TEXT DEFAULT 'active', -- 'active', 'closed_tp', 'closed_sl', 'closed_be', 'expired'
+                fail_fast_triggered INTEGER DEFAULT 0,
+                fail_fast_hit_at TEXT,
+                status TEXT DEFAULT 'active', -- 'active', 'closed_tp', 'closed_sl', 'closed_be', 'closed_fail_fast', 'expired'
+                pos_size_usd REAL DEFAULT 0.0,
+                pos_size_coins REAL DEFAULT 0.0,
+                risk_usd REAL DEFAULT 10.0,
                 final_pnl_pct REAL DEFAULT 0.0,
+                net_pnl_usd REAL DEFAULT 0.0,
+                notified_tp1 INTEGER DEFAULT 0,
+                notified_tp2 INTEGER DEFAULT 0,
+                notified_closed INTEGER DEFAULT 0,
+                notified_fail_fast INTEGER DEFAULT 0,
                 bars_to_first_tp INTEGER DEFAULT 0,
                 bars_to_close INTEGER DEFAULT 0,
                 max_favorable REAL DEFAULT 0.0,
@@ -159,6 +199,7 @@ def init_db(db_path: Path | str = ANALYTICS_DB_PATH):
             CREATE INDEX IF NOT EXISTS idx_dedup_bar_ts ON signal_dedup(bar_timestamp);
             """
         )
+        _migrate_schema(conn)
     logger.info(f"База данных аналитики инициализирована: {db_path}")
 
 
@@ -287,6 +328,7 @@ def save_signal(
     data: Dict[str, Any],
     is_active_trade: bool = True,
     db_path: Path | str = ANALYTICS_DB_PATH,
+    telegram_msg_id: Optional[int] = None,
 ) -> int:
     """
     Сохраняет сигнал в таблицу `signals` и создаёт начальную запись в `signal_outcomes`.
@@ -301,6 +343,7 @@ def save_signal(
     bar_ts = data.get("bar_timestamp")
     w5_price = data.get("w5_price", data["entry_price"])
     sig_key = f"{data['symbol']}_{data['interval']}_{data['direction']}_{bar_ts}"
+    tg_msg_id = telegram_msg_id or data.get("telegram_msg_id")
 
     with db_session(db_path) as conn:
         cursor = conn.cursor()
@@ -310,7 +353,7 @@ def save_signal(
                 created_at, symbol, interval, direction,
                 algo_score, vision_score, vision_provider, vision_reason,
                 entry_price, sl_price, tp1_price, tp2_price, tp3_price, tp4_price,
-                rr_ratio, impulse_pct, sl_pct, sent_to_telegram,
+                rr_ratio, impulse_pct, sl_pct, sent_to_telegram, telegram_msg_id,
                 w0_price, w1_price, w2_price, w3_price, w4_price, w5_price,
                 wave_direction, origin_div, w3_longest, dur_bars, dur_hours,
                 bar_timestamp
@@ -318,7 +361,7 @@ def save_signal(
                 ?, ?, ?, ?,
                 ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?,
+                ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
                 ?
@@ -342,7 +385,8 @@ def save_signal(
                 data.get("rr_ratio", 0.0),
                 data.get("impulse_pct", 0.0),
                 data.get("sl_pct", 0.0),
-                1 if data.get("sent_to_telegram") else 0,
+                1 if (data.get("sent_to_telegram") or tg_msg_id) else 0,
+                tg_msg_id,
                 data.get("w0_price"),
                 data.get("w1_price"),
                 data.get("w2_price"),
@@ -361,13 +405,18 @@ def save_signal(
 
         # Создаем запись в outcomes: 'active' или 'info_only'
         initial_status = "active" if is_active_trade else "info_only"
+        pos_usd = float(data.get("pos_size_usd", 0.0))
+        pos_coins = float(data.get("pos_size_coins", 0.0))
+        risk_u = float(data.get("risk_budget_usd", data.get("risk_usd", 10.0)))
+
         cursor.execute(
             """
             INSERT INTO signal_outcomes (
-                signal_id, checked_at, current_price, status
-            ) VALUES (?, ?, ?, ?)
+                signal_id, checked_at, current_price, status,
+                pos_size_usd, pos_size_coins, risk_usd
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (signal_id, now_iso, data["entry_price"], initial_status),
+            (signal_id, now_iso, data["entry_price"], initial_status, pos_usd, pos_coins, risk_u),
         )
 
         # Регистрируем в signal_dedup
@@ -435,6 +484,7 @@ def get_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> List[Dict[str
             s.rr_ratio,
             s.impulse_pct,
             s.sent_to_telegram,
+            s.telegram_msg_id,
             s.bar_timestamp,
             o.current_price,
             o.tp1_hit,
@@ -449,8 +499,18 @@ def get_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> List[Dict[str
             o.sl_hit_at,
             o.be_triggered,
             o.be_hit_at,
+            o.fail_fast_triggered,
+            o.fail_fast_hit_at,
             o.status,
+            o.pos_size_usd,
+            o.pos_size_coins,
+            o.risk_usd,
             o.final_pnl_pct,
+            o.net_pnl_usd,
+            o.notified_tp1,
+            o.notified_tp2,
+            o.notified_closed,
+            o.notified_fail_fast,
             o.bars_to_first_tp,
             o.bars_to_close,
             o.max_favorable,
@@ -463,6 +523,7 @@ def get_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> List[Dict[str
     with db_session(db_path) as conn:
         rows = conn.execute(query).fetchall()
         return [dict(r) for r in rows]
+
 
 
 def log_scanner_health(
