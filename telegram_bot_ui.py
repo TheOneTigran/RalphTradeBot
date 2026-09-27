@@ -44,6 +44,7 @@ from analytics_db import (
     get_detailed_statistics,
     get_active_trades_detailed,
     get_analytics_summary,
+    reset_analytics_data,
 )
 
 logger = logging.getLogger("RalphTelegramBotUI")
@@ -93,6 +94,7 @@ class TelegramUIController:
             {"command": "coins", "description": "🪙 Управление монетами (вкл/выкл)"},
             {"command": "tf", "description": "⏱ Таймфреймы (15m, 1h, 5m, 4h)"},
             {"command": "settings", "description": "⚙️ Депозит, риск и плечо"},
+            {"command": "reset", "description": "🗑 Сбросить историю и статистику"},
             {"command": "help", "description": "📖 Справка и команды"},
         ]
         self._call("setMyCommands", {"commands": commands})
@@ -291,8 +293,32 @@ class TelegramUIController:
                     {"text": "🪙 Рейтинг монет", "callback_data": "screen:stats:coins"},
                 ],
                 [
+                    {"text": "🗑 Сбросить статистику", "callback_data": "confirm:reset_stats"},
+                ],
+                [
                     {"text": "🔄 Обновить", "callback_data": f"screen:stats:{period}"},
                     {"text": "🔙 В главное меню", "callback_data": "screen:main"},
+                ],
+            ]
+        }
+        return text, keyboard
+
+    def render_confirm_reset_screen(self) -> Tuple[str, Dict[str, Any]]:
+        text = (
+            f"⚠️ <b>ПОДТВЕРЖДЕНИЕ СБРОСА СТАТИСТИКИ</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"Вы действительно хотите обнулить всю накопленную историю сигналов, сделок и PnL?\n\n"
+            f"• <b>Будет удалено:</b> вся история сигналов, результаты закрытых сделок, счетчики винрейта и кэш.\n"
+            f"• <b>Будет сохранено:</b> ваши персональные настройки (выбранные монеты, таймфреймы, депозит, риск и плечо).\n\n"
+            f"<i>Это действие необратимо. Отсчёт статистики начнётся с чистого листа.</i>"
+        )
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "🔴 Да, сбросить статистику", "callback_data": "action:do_reset_stats"},
+                ],
+                [
+                    {"text": "🟢 Отмена (Назад в статистику)", "callback_data": "screen:stats:all"},
                 ],
             ]
         }
@@ -555,6 +581,16 @@ class TelegramUIController:
             text, kb = self.render_settings_screen()
             self.edit_message(chat_id, msg_id, text, kb)
 
+        elif data == "confirm:reset_stats":
+            text, kb = self.render_confirm_reset_screen()
+            self.edit_message(chat_id, msg_id, text, kb)
+
+        elif data == "action:do_reset_stats":
+            reset_analytics_data()
+            toast_msg = "✅ Вся статистика успешно сброшена!"
+            text, kb = self.render_stats_screen("all")
+            self.edit_message(chat_id, msg_id, text, kb)
+
         elif data.startswith("set_dep:"):
             val = float(data.split(":")[1])
             set_deposit(val)
@@ -627,6 +663,10 @@ class TelegramUIController:
 
         elif cmd in ("/settings", "/risk", "настройки"):
             msg_text, kb = self.render_settings_screen()
+            self.send_message(chat_id, msg_text, kb)
+
+        elif cmd in ("/reset_stats", "/clear_stats", "/reset", "сброс"):
+            msg_text, kb = self.render_confirm_reset_screen()
             self.send_message(chat_id, msg_text, kb)
 
         elif cmd == "/add":

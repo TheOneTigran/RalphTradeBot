@@ -1003,3 +1003,34 @@ def get_active_trades_detailed(db_path: Path | str = ANALYTICS_DB_PATH) -> List[
             results.append(d)
         return results
 
+
+def reset_analytics_data(db_path: Path | str = ANALYTICS_DB_PATH) -> bool:
+    """
+    Полностью очищает историю сигналов, исходов и метрик, сбрасывая статистику.
+    Пользовательские настройки (таблица bot_settings: депозит, риск, монеты, ТФ) СОХРАНЯЮТСЯ.
+    """
+    with db_session(db_path) as conn:
+        conn.execute("DELETE FROM signal_outcomes;")
+        conn.execute("DELETE FROM signals;")
+        conn.execute("DELETE FROM scanner_health;")
+        conn.execute("DELETE FROM signal_dedup;")
+        try:
+            conn.execute(
+                "DELETE FROM sqlite_sequence WHERE name IN ('signals', 'signal_outcomes', 'scanner_health', 'signal_dedup');"
+            )
+        except Exception:
+            pass
+
+    # Очищаем локальный файл seen_signals.json
+    try:
+        from config import BASE_DIR
+        seen_file = BASE_DIR / "seen_signals.json"
+        if seen_file.exists():
+            seen_file.write_text("[]", encoding="utf-8")
+    except Exception as e:
+        logger.debug(f"Ошибка очистки seen_signals.json: {e}")
+
+    logger.info("✅ Вся накопленная статистика и история сигналов успешно сброшена (таблицы очищены).")
+    return True
+
+
