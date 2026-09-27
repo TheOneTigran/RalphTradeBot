@@ -135,6 +135,19 @@ def init_db(db_path: Path | str = ANALYTICS_DB_PATH):
                 errors TEXT DEFAULT ''
             );
 
+            -- Таблица 4: Реестр дедупликации сигналов (защита от сдвига экстремума и повторов)
+            CREATE TABLE IF NOT EXISTS signal_dedup (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sig_key TEXT UNIQUE NOT NULL,
+                symbol TEXT NOT NULL,
+                interval TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                bar_timestamp INTEGER NOT NULL,
+                entry_price REAL NOT NULL,
+                w5_price REAL NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
             -- Индексы для быстрой фильтрации и аналитики
             CREATE INDEX IF NOT EXISTS idx_signals_sym_tf ON signals(symbol, interval);
             CREATE INDEX IF NOT EXISTS idx_signals_created ON signals(created_at);
@@ -142,18 +155,152 @@ def init_db(db_path: Path | str = ANALYTICS_DB_PATH):
             CREATE INDEX IF NOT EXISTS idx_outcomes_status ON signal_outcomes(status);
             CREATE INDEX IF NOT EXISTS idx_outcomes_sig_id ON signal_outcomes(signal_id);
             CREATE INDEX IF NOT EXISTS idx_health_ts ON scanner_health(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_dedup_sym_tf ON signal_dedup(symbol, interval, direction);
+            CREATE INDEX IF NOT EXISTS idx_dedup_bar_ts ON signal_dedup(bar_timestamp);
             """
         )
     logger.info(f"База данных аналитики инициализирована: {db_path}")
 
 
-def save_signal(data: Dict[str, Any], db_path: Path | str = ANALYTICS_DB_PATH) -> int:
+def get_active_trade_for_symbol(
+    symbol: str, db_path: Path | str = ANALYTICS_DB_PATH
+) -> Optional[Dict[str, Any]]:
+    """
+    Возвращает активную сделку по указанному символу (status = 'active'), если таковая существует.
+    Используется для предотвращения открытия конкурирующих или встречных сделок в трекере.
+    """
+    query = """
+        SELECT
+            s.id AS signal_id,
+            s.symbol,
+            s.interval,
+            s.direction,
+            s.entry_price,
+            s.created_at,
+            o.status
+        FROM signals s
+        JOIN signal_outcomes o ON s.id = o.signal_id
+        WHERE s.symbol = ? AND o.status = 'active'
+        ORDER BY s.id DESC
+        LIMIT 1
+    """
+    with db_session(db_path) as conn:
+        row = conn.execute(query, (symbol,)).fetchone()
+        if row:
+            return dict(row)
+    return None
+
+
+def is_signal_duplicate_in_db(
+    symbol: str,
+    interval: str,
+    direction: str,
+    bar_timestamp: int,
+    w5_price: float,
+    cooldown_bars: int = 6,
+    db_path: Path | str = ANALYTICS_DB_PATH,
+) -> Tuple[bool, str]:
+    """
+    Проверяет в базе данных, не является ли сигнал дубликатом уже сохранённого импульса.
+    1. Точное совпадение ключа {symbol}_{interval}_{direction}_{bar_timestamp}.
+    2. Сдвиг экстремума W5 на 1-3 свечи (тот же импульс при обновлении свечей).
+    3. Недавний импульс в пределах cooldown_bars свечей с ценовым расхождением <= 1.5%.
+    """
+    tf_seconds_map = {
+        "5m": 300,
+        "15m": 900,
+        "30m": 1800,
+        "1h": 3600,
+        "4h": 14400,
+        "1d": 86400,
+    }
+    bar_sec = tf_seconds_map.get(interval, 900)
+    sig_key = f"{symbol}_{interval}_{direction}_{bar_timestamp}"
+
+    with db_session(db_path) as conn:
+        # 1. Точное совпадение по sig_key
+        exact = conn.execute(
+            "SELECT id FROM signal_dedup WHERE sig_key = ? LIMIT 1", (sig_key,)
+        ).fetchone()
+        if exact:
+            return True, f"exact_key_match ({sig_key})"
+
+        # 2. Поиск по недавним сигналам той же монеты, ТФ и направления
+        cutoff_ts = bar_timestamp - (cooldown_bars * bar_sec)
+        future_cutoff_ts = bar_timestamp + (cooldown_bars * bar_sec)
+
+        rows = conn.execute(
+            """
+            SELECT sig_key, bar_timestamp, w5_price, entry_price
+            FROM signal_dedup
+            WHERE symbol = ? AND interval = ? AND direction = ?
+              AND bar_timestamp >= ? AND bar_timestamp <= ?
+            ORDER BY bar_timestamp DESC
+            """,
+            (symbol, interval, direction, cutoff_ts, future_cutoff_ts),
+        ).fetchall()
+
+        for r in rows:
+            prev_ts = r["bar_timestamp"]
+            prev_w5 = r["w5_price"] if r["w5_price"] else r["entry_price"]
+            delta_sec = abs(bar_timestamp - prev_ts)
+            delta_bars = delta_sec / bar_sec if bar_sec > 0 else 0
+
+            # Сдвиг экстремума W5 на 1-3 бара — 100% тот же импульс
+            if delta_bars <= 3.0:
+                return True, f"pivot_jitter_shift (delta={delta_bars:.1f} bars, key={r['sig_key']})"
+
+            # В пределах кулдауна с ценовым расхождением <= 1.5%
+            if prev_w5 > 0:
+                price_diff_pct = abs(w5_price - prev_w5) / prev_w5
+                if price_diff_pct <= 0.015:
+                    return True, f"same_zone_impulse (delta={delta_bars:.1f} bars, diff={price_diff_pct*100:.2f}%)"
+
+    return False, ""
+
+
+def load_all_signal_keys(db_path: Path | str = ANALYTICS_DB_PATH) -> Set[str]:
+    """
+    Загружает полный набор ключей уже зарегистрированных сигналов из БД.
+    Обеспечивает синхронизацию in-memory seen_signals при старте или перезапуске бота.
+    """
+    keys = set()
+    try:
+        with db_session(db_path) as conn:
+            # Из таблицы signal_dedup
+            dedup_rows = conn.execute("SELECT sig_key FROM signal_dedup").fetchall()
+            for r in dedup_rows:
+                keys.add(r["sig_key"])
+
+            # Из таблицы signals
+            sig_rows = conn.execute(
+                "SELECT symbol, interval, direction, bar_timestamp FROM signals WHERE bar_timestamp IS NOT NULL"
+            ).fetchall()
+            for r in sig_rows:
+                keys.add(f"{r['symbol']}_{r['interval']}_{r['direction']}_{r['bar_timestamp']}")
+    except Exception as e:
+        logger.warning(f"Ошибка загрузки ключей сигналов из БД: {e}")
+    return keys
+
+
+def save_signal(
+    data: Dict[str, Any],
+    is_active_trade: bool = True,
+    db_path: Path | str = ANALYTICS_DB_PATH,
+) -> int:
     """
     Сохраняет сигнал в таблицу `signals` и создаёт начальную запись в `signal_outcomes`.
+    Если is_active_trade == True: статус в outcomes ставится 'active' (сопровождается трекером).
+    Если is_active_trade == False: статус ставится 'info_only' (сигнал сохранён для истории,
+    но не открывает дублирующуюся конкурирующую позицию).
+    Также регистрирует сигнал в таблице `signal_dedup`.
     Возвращает `signal_id`.
     """
     now_iso = datetime.now(timezone.utc).isoformat()
     created_at = data.get("created_at", now_iso)
+    bar_ts = data.get("bar_timestamp")
+    w5_price = data.get("w5_price", data["entry_price"])
+    sig_key = f"{data['symbol']}_{data['interval']}_{data['direction']}_{bar_ts}"
 
     with db_session(db_path) as conn:
         cursor = conn.cursor()
@@ -207,20 +354,41 @@ def save_signal(data: Dict[str, Any], db_path: Path | str = ANALYTICS_DB_PATH) -
                 1 if data.get("w3_longest", True) else 0,
                 data.get("dur_bars", 0),
                 data.get("dur_hours", 0.0),
-                data.get("bar_timestamp"),
+                bar_ts,
             ),
         )
         signal_id = cursor.lastrowid
 
-        # Создаем пустую запись в outcomes со статусом 'active'
+        # Создаем запись в outcomes: 'active' или 'info_only'
+        initial_status = "active" if is_active_trade else "info_only"
         cursor.execute(
             """
             INSERT INTO signal_outcomes (
                 signal_id, checked_at, current_price, status
-            ) VALUES (?, ?, ?, 'active')
+            ) VALUES (?, ?, ?, ?)
             """,
-            (signal_id, now_iso, data["entry_price"]),
+            (signal_id, now_iso, data["entry_price"], initial_status),
         )
+
+        # Регистрируем в signal_dedup
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO signal_dedup (
+                sig_key, symbol, interval, direction, bar_timestamp, entry_price, w5_price, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                sig_key,
+                data["symbol"],
+                data["interval"],
+                data["direction"],
+                bar_ts or 0,
+                data["entry_price"],
+                w5_price,
+                created_at,
+            ),
+        )
+
         return signal_id
 
 

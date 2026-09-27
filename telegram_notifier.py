@@ -55,6 +55,7 @@ def format_signal_message(
     w0_status: Optional[str] = None,
     origin_div: bool = False,
     w3_longest: bool = True,
+    conflict_note: Optional[str] = None,
 ) -> str:
     """Формирует текст сообщения для Telegram с полноценным торговым планом и HTML-разметкой."""
     dt = detection_time or datetime.now()
@@ -70,6 +71,15 @@ def format_signal_message(
         dir_badge = "▲ <b>LONG</b>"
         sl_note = "└ За экстремумом W5"
         imp_sign = "-"
+
+    # Если есть конфликт активной сделки — выводим информационную плашку
+    conflict_banner = ""
+    if conflict_note:
+        conflict_banner = (
+            f"⚠️ <b>ИНФОРМАЦИОННЫЙ СИГНАЛ (ПОЗИЦИЯ НЕ ОТКРЫВАЕТСЯ)</b>\n"
+            f"└ <i>По активу уже сопровождается: {conflict_note}</i>\n"
+            f"──────────────────────────\n\n"
+        )
 
     # Если есть TradePlan
     if trade_plan is not None:
@@ -124,6 +134,7 @@ def format_signal_message(
         w_struct_block = ""
 
     msg = (
+        f"{conflict_banner}"
         f"{header}\n\n"
         f"📌 <code>{symbol}</code> (Crypto)\n"
         f"⏱️ <b>{interval}</b>\n\n"
@@ -188,6 +199,7 @@ def send_signal_to_telegram(
     w0_status: Optional[str] = None,
     origin_div: bool = False,
     w3_longest: bool = True,
+    conflict_note: Optional[str] = None,
     bot_token: str = TELEGRAM_BOT_TOKEN,
     chat_id: str = TELEGRAM_CHAT_ID,
     min_score: int = TELEGRAM_MIN_SCORE,
@@ -223,6 +235,7 @@ def send_signal_to_telegram(
         w0_status=w0_status,
         origin_div=origin_div,
         w3_longest=w3_longest,
+        conflict_note=conflict_note,
     )
 
     url_photo = f"https://api.telegram.org/bot{bot_token}/sendPhoto"

@@ -27,6 +27,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -56,7 +57,15 @@ from signal_scanner import calculate_rsi_wilder
 from scipy.signal import argrelextrema
 from trade_planner import calculate_trade_plan, TradePlan
 from telegram_notifier import send_signal_to_telegram
-from analytics_db import init_db, save_signal, log_scanner_health, get_analytics_summary
+from analytics_db import (
+    init_db,
+    save_signal,
+    log_scanner_health,
+    get_analytics_summary,
+    get_active_trade_for_symbol,
+    is_signal_duplicate_in_db,
+    load_all_signal_keys,
+)
 from outcome_tracker import OutcomeTrackerWorker
 
 logging.basicConfig(
@@ -67,6 +76,20 @@ logging.basicConfig(
 logger = logging.getLogger("RalphLiveScanner")
 
 SEEN_SIGNALS_FILE = BASE_DIR / "seen_signals.json"
+
+# Глобальная блокировка для потокобезопасного доступа к множеству сигналов и файлу
+_seen_lock = threading.Lock()
+# In-memory кэш недавних импульсов: (symbol, interval, direction) -> [(bar_ts, w5_price), ...]
+_recent_signals_cache: Dict[Tuple[str, str, str], List[Tuple[int, float]]] = {}
+
+TF_SECONDS_MAP = {
+    "5m": 300,
+    "15m": 900,
+    "30m": 1800,
+    "1h": 3600,
+    "4h": 14400,
+    "1d": 86400,
+}
 
 
 def load_seen_signals() -> Set[str]:
@@ -81,13 +104,85 @@ def load_seen_signals() -> Set[str]:
 
 
 def save_seen_signals(seen: Set[str]):
-    """Сохраняет идентификаторы сигналов в файл."""
+    """Сохраняет идентификаторы сигналов в файл (потокобезопасно и атомарно)."""
     try:
-        # Сохраняем последние 10,000 сигналов для предотвращения разрастания
         trimmed = list(seen)[-10000:]
-        SEEN_SIGNALS_FILE.write_text(json.dumps(trimmed, indent=2), encoding="utf-8")
+        temp_file = SEEN_SIGNALS_FILE.with_suffix(".tmp")
+        temp_file.write_text(json.dumps(trimmed, indent=2), encoding="utf-8")
+        temp_file.replace(SEEN_SIGNALS_FILE)
     except Exception as e:
         logger.error(f"Ошибка сохранения {SEEN_SIGNALS_FILE}: {e}")
+
+
+def is_duplicate_signal_candidate(
+    symbol: str,
+    interval: str,
+    direction: str,
+    bar_ts: int,
+    w5_price: float,
+    seen_signals: Set[str],
+) -> Tuple[bool, str]:
+    """
+    Многоуровневая проверка на дубликат:
+    1. Точный ключ sig_id в in-memory множестве seen_signals.
+    2. Сдвиг экстремума W5 на 1-3 свечи (тот же импульс при пересчёте swing pivots).
+    3. Недавний импульс в пределах 6 свечей с отклонением цены <= 1.5%.
+    4. Проверка по таблице signal_dedup в базе данных SQLite.
+    """
+    sig_id = f"{symbol}_{interval}_{direction}_{bar_ts}"
+    bar_sec = TF_SECONDS_MAP.get(interval, 900)
+
+    with _seen_lock:
+        if sig_id in seen_signals:
+            return True, f"in_memory_sig_id ({sig_id})"
+
+        recent_list = _recent_signals_cache.get((symbol, interval, direction), [])
+        for prev_ts, prev_w5 in recent_list:
+            delta_bars = abs(bar_ts - prev_ts) / bar_sec if bar_sec > 0 else 0
+            if delta_bars <= 3.0:
+                return True, f"in_memory_pivot_jitter (shift={delta_bars:.1f} bars)"
+            if prev_w5 > 0 and delta_bars <= 6.0:
+                diff_pct = abs(w5_price - prev_w5) / prev_w5
+                if diff_pct <= 0.015:
+                    return True, f"in_memory_same_zone (delta={delta_bars:.1f} bars, diff={diff_pct*100:.2f}%)"
+
+    # Проверка по SQLite БД
+    is_dup_db, reason_db = is_signal_duplicate_in_db(
+        symbol=symbol,
+        interval=interval,
+        direction=direction,
+        bar_timestamp=bar_ts,
+        w5_price=w5_price,
+        cooldown_bars=6,
+    )
+    if is_dup_db:
+        with _seen_lock:
+            seen_signals.add(sig_id)
+        return True, f"db_{reason_db}"
+
+    return False, ""
+
+
+def register_signal_dedup(
+    symbol: str,
+    interval: str,
+    direction: str,
+    bar_ts: int,
+    w5_price: float,
+    seen_signals: Set[str],
+):
+    """Регистрирует подтверждённый сигнал в in-memory структурах и сохраняет файл."""
+    sig_id = f"{symbol}_{interval}_{direction}_{bar_ts}"
+    key = (symbol, interval, direction)
+    with _seen_lock:
+        seen_signals.add(sig_id)
+        if key not in _recent_signals_cache:
+            _recent_signals_cache[key] = []
+        _recent_signals_cache[key].append((bar_ts, w5_price))
+        if len(_recent_signals_cache[key]) > 20:
+            _recent_signals_cache[key] = _recent_signals_cache[key][-20:]
+        save_seen_signals(seen_signals)
+
 
 
 def fetch_binance_klines(symbol: str, interval: str, limit: int = 150) -> Optional[pd.DataFrame]:
@@ -256,10 +351,19 @@ def scan_live_pair(
     candidates.sort(key=lambda c: c[0], reverse=True)
     p2, direction, p1, p1_price, p1_rsi, p2_rsi, p2_price = candidates[0]
 
-    # Проверка на дубликат по временной метке бара W5
+    # Проверка на дубликат по временной метке бара W5 и сдвигу экстремумов
     bar_ts = int(df.index[p2].timestamp()) if isinstance(df.index, pd.DatetimeIndex) else p2
     sig_id = f"{symbol}_{interval}_{direction}_{bar_ts}"
-    if sig_id in seen_signals:
+
+    is_dup, dup_reason = is_duplicate_signal_candidate(
+        symbol=symbol,
+        interval=interval,
+        direction=direction,
+        bar_ts=bar_ts,
+        w5_price=p2_price,
+        seen_signals=seen_signals,
+    )
+    if is_dup:
         return None
 
     # 1. Алгоритмический анализ импульса Эллиотта
@@ -270,8 +374,8 @@ def scan_live_pair(
     )
 
     if not algo_res.is_valid or algo_res.score < MIN_ALGO_ELLIOTT_SCORE:
-        # Помечаем как просмотренный, чтобы не пересчитывать
-        seen_signals.add(sig_id)
+        with _seen_lock:
+            seen_signals.add(sig_id)
         return None
 
     # Точка входа: цена закрытия W5 (или open текущей свечи если есть)
@@ -288,7 +392,8 @@ def scan_live_pair(
 
     if not trade_plan.is_viable:
         logger.info(f"⏭️ {symbol} {interval} {direction}: R:R {trade_plan.rr_ratio:.2f} < {MIN_RR_RATIO} — пропуск.")
-        seen_signals.add(sig_id)
+        with _seen_lock:
+            seen_signals.add(sig_id)
         return None
 
     # Длительность формирования
@@ -392,9 +497,23 @@ def scan_live_pair(
         logger.warning(f"Ошибка сохранения аннотированного графика {fn}: {e}")
         chart_path.write_bytes(chart_png)
 
-    # Добавляем в список обработанных
-    seen_signals.add(sig_id)
-    save_seen_signals(seen_signals)
+    # Проверка наличия уже активной позиции по этому инструменту в БД
+    with _seen_lock:
+        active_trade = get_active_trade_for_symbol(symbol)
+
+    conflict_note = None
+    is_active_trade = True
+    if active_trade:
+        conflict_note = (
+            f"#{active_trade['signal_id']} {active_trade['symbol']} "
+            f"{active_trade['interval']} {active_trade['direction']} "
+            f"(вход: {active_trade['entry_price']})"
+        )
+        is_active_trade = False
+        logger.info(
+            f"ℹ️ {symbol}: уже активна сделка {conflict_note}. "
+            f"Сигнал отправляется в TG как информационный (в трекер позиций новая сделка не открывается)."
+        )
 
     # 6. Отправка подтверждённого сигнала в Telegram (Score >= 85)
     sent_to_tg_flag = False
@@ -419,6 +538,7 @@ def scan_live_pair(
             w0_status=w0_stat,
             origin_div=orig_div,
             w3_longest=algo_res.details.get("w3_longest", True),
+            conflict_note=conflict_note,
         )
         if sent:
             sent_to_tg_flag = True
@@ -459,11 +579,23 @@ def scan_live_pair(
             "dur_bars": dur_bars,
             "dur_hours": dur_hours,
             "bar_timestamp": bar_ts,
+            "w5_price": p2_price,
         }
-        db_id = save_signal(sig_data_db)
-        logger.info(f"💾 Сигнал #{db_id} сохранён в ralph_analytics.db ({symbol} {interval} {direction})")
+        db_id = save_signal(sig_data_db, is_active_trade=is_active_trade)
+        trade_label = "активная сделка" if is_active_trade else "инфо-сигнал (без открытия в трекере)"
+        logger.info(f"💾 Сигнал #{db_id} сохранён в ralph_analytics.db ({symbol} {interval} {direction} — {trade_label})")
     except Exception as e:
         logger.warning(f"Ошибка сохранения сигнала в БД: {e}")
+
+    # Регистрируем подтверждённый сигнал в дедупликаторе
+    register_signal_dedup(
+        symbol=symbol,
+        interval=interval,
+        direction=direction,
+        bar_ts=bar_ts,
+        w5_price=p2_price,
+        seen_signals=seen_signals,
+    )
 
     return {
         "symbol": symbol, "interval": interval, "direction": direction,
@@ -498,7 +630,9 @@ def run_scanner_loop(
     tracker_worker.start()
 
     seen_signals = load_seen_signals()
-    logger.info(f"Загружено ранее обработанных сигналов: {len(seen_signals)}")
+    db_keys = load_all_signal_keys()
+    seen_signals.update(db_keys)
+    logger.info(f"Загружено ранее обработанных сигналов: {len(seen_signals)} (файл seen_signals.json + ralph_analytics.db)")
 
     # Создаём список всех задач (символ, интервал)
     tasks = [(s, i) for s in symbols for i in intervals]
