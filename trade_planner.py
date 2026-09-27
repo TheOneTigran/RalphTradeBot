@@ -115,6 +115,8 @@ def calculate_trade_plan(
     entry_price: float,
     buffer_pct: float = 0.15,
     min_rr_ratio: float = 1.5,
+    risk_budget_usd: Optional[float] = None,
+    leverage: Optional[int] = None,
 ) -> TradePlan:
     """
     Рассчитывает профессиональный торговый план на основе волновой структуры.
@@ -123,6 +125,8 @@ def calculate_trade_plan(
     entry_price: цена входа (Open бара после W5).
     buffer_pct: защитный буфер за экстремумом W5 в процентах (по умолчанию 0.15%).
     min_rr_ratio: минимально допустимый R:R для подтверждения сигнала.
+    risk_budget_usd: бюджет риска в USD (по умолчанию из настроек/конфига).
+    leverage: кредитное плечо для расчёта маржи.
     """
     w0 = float(wave_points.get("W0", entry_price))
     w1 = float(wave_points.get("W1", entry_price))
@@ -202,8 +206,8 @@ def calculate_trade_plan(
     is_viable = (rr_ratio >= min_rr_ratio) and (sl_pct > 0.0)
 
     # Расчет точных объемов позиции и маржи
-    risk_budget = float(RISK_BUDGET_USD)
-    lev = int(DEFAULT_LEVERAGE)
+    risk_budget = float(risk_budget_usd) if risk_budget_usd is not None else float(RISK_BUDGET_USD)
+    lev = int(leverage) if leverage is not None else int(DEFAULT_LEVERAGE)
     pos_size_usd = (risk_budget / (sl_pct / 100.0)) if sl_pct > 0 else 0.0
     pos_size_coins = (pos_size_usd / entry_price) if entry_price > 0 else 0.0
     margin_usd = pos_size_usd / max(1, lev)

@@ -78,6 +78,17 @@ def _migrate_schema(conn: sqlite3.Connection):
         for col_name, col_def in add_cols:
             if col_name not in cols_out:
                 conn.execute(f"ALTER TABLE signal_outcomes ADD COLUMN {col_name} {col_def};")
+
+        # Проверяем таблицу bot_settings
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bot_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            """
+        )
     except Exception as e:
         logger.warning(f"Предупреждение при миграции схемы: {e}")
 
@@ -750,3 +761,245 @@ def export_dataset_for_ml(db_path: Path | str = ANALYTICS_DB_PATH) -> pd.DataFra
     with db_session(db_path) as conn:
         df = pd.read_sql_query(query, conn)
     return df
+
+
+def get_detailed_statistics(period: str = "all", db_path: Path | str = ANALYTICS_DB_PATH) -> Dict[str, Any]:
+    """
+    Возвращает детальную, структурированную аналитическую статистику за указанный период:
+    period: 'all' (все время), 'today' (сегодня UTC), '7d' (последние 7 дней), '30d' (30 дней).
+    """
+    time_filter = ""
+    params = []
+    
+    if period == "today":
+        time_filter = " AND date(s.created_at) = date('now') "
+    elif period == "7d":
+        time_filter = " AND datetime(s.created_at) >= datetime('now', '-7 days') "
+    elif period == "30d":
+        time_filter = " AND datetime(s.created_at) >= datetime('now', '-30 days') "
+
+    with db_session(db_path) as conn:
+        # Всего сигналов за период
+        total_signals = conn.execute(
+            f"SELECT COUNT(*) FROM signals s WHERE 1=1 {time_filter}", params
+        ).fetchone()[0]
+
+        if total_signals == 0:
+            return {
+                "period": period,
+                "total_signals": 0,
+                "active_trades": 0,
+                "closed_trades": 0,
+                "win_rate": 0.0,
+                "full_tp_wr": 0.0,
+                "profit_factor": 0.0,
+                "net_pnl_usd": 0.0,
+                "net_pnl_r": 0.0,
+                "wins": 0,
+                "losses": 0,
+                "be_count": 0,
+                "avg_win_usd": 0.0,
+                "avg_loss_usd": 0.0,
+                "best_trade_usd": 0.0,
+                "worst_trade_usd": 0.0,
+                "tp1_count": 0,
+                "tp2_count": 0,
+                "tp3_count": 0,
+                "tp4_count": 0,
+                "sl_count": 0,
+                "fail_fast_count": 0,
+                "tf_breakdown": {},
+                "symbol_breakdown": [],
+            }
+
+        # Статистика по сделкам и исходам
+        q_summary = f"""
+            SELECT
+                COUNT(s.id) AS total_sig,
+                SUM(CASE WHEN o.status = 'active' THEN 1 ELSE 0 END) AS active_cnt,
+                SUM(CASE WHEN o.status != 'active' AND o.status IS NOT NULL THEN 1 ELSE 0 END) AS closed_cnt,
+                SUM(CASE WHEN o.status IN ('closed_tp', 'closed_be') THEN 1 ELSE 0 END) AS wins_cnt,
+                SUM(CASE WHEN o.status = 'closed_tp' THEN 1 ELSE 0 END) AS full_tp_cnt,
+                SUM(CASE WHEN o.status IN ('closed_sl', 'closed_fail_fast') THEN 1 ELSE 0 END) AS losses_cnt,
+                SUM(CASE WHEN o.status = 'closed_be' THEN 1 ELSE 0 END) AS be_cnt,
+                SUM(CASE WHEN o.tp1_hit = 1 THEN 1 ELSE 0 END) AS tp1_cnt,
+                SUM(CASE WHEN o.tp2_hit = 1 THEN 1 ELSE 0 END) AS tp2_cnt,
+                SUM(CASE WHEN o.tp3_hit = 1 THEN 1 ELSE 0 END) AS tp3_cnt,
+                SUM(CASE WHEN o.tp4_hit = 1 THEN 1 ELSE 0 END) AS tp4_cnt,
+                SUM(CASE WHEN o.sl_hit = 1 THEN 1 ELSE 0 END) AS sl_cnt,
+                SUM(CASE WHEN o.fail_fast_triggered = 1 THEN 1 ELSE 0 END) AS ff_cnt,
+                COALESCE(SUM(o.net_pnl_usd), 0.0) AS net_pnl,
+                COALESCE(SUM(CASE WHEN o.risk_usd > 0 THEN o.net_pnl_usd / o.risk_usd ELSE 0 END), 0.0) AS net_r,
+                COALESCE(SUM(CASE WHEN o.net_pnl_usd > 0 THEN o.net_pnl_usd ELSE 0 END), 0.0) AS gross_profit,
+                COALESCE(ABS(SUM(CASE WHEN o.net_pnl_usd < 0 THEN o.net_pnl_usd ELSE 0 END)), 0.0) AS gross_loss,
+                AVG(CASE WHEN o.net_pnl_usd > 0 THEN o.net_pnl_usd END) AS avg_win,
+                AVG(CASE WHEN o.net_pnl_usd < 0 THEN o.net_pnl_usd END) AS avg_loss,
+                MAX(o.net_pnl_usd) AS best_trade,
+                MIN(o.net_pnl_usd) AS worst_trade
+            FROM signals s
+            LEFT JOIN signal_outcomes o ON s.id = o.signal_id
+            WHERE 1=1 {time_filter}
+        """
+        row = conn.execute(q_summary, params).fetchone()
+
+        active_cnt = row["active_cnt"] or 0
+        closed_cnt = row["closed_cnt"] or 0
+        wins_cnt = row["wins_cnt"] or 0
+        full_tp_cnt = row["full_tp_cnt"] or 0
+        losses_cnt = row["losses_cnt"] or 0
+        be_cnt = row["be_cnt"] or 0
+        decided = wins_cnt + losses_cnt
+
+        win_rate = round((wins_cnt / decided * 100.0), 1) if decided > 0 else 0.0
+        full_tp_wr = round((full_tp_cnt / decided * 100.0), 1) if decided > 0 else 0.0
+
+        gross_profit = float(row["gross_profit"] or 0.0)
+        gross_loss = float(row["gross_loss"] or 0.0)
+        profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 1e-4 else (99.0 if gross_profit > 0 else 0.0)
+
+        # Разбивка по таймфреймам
+        q_tf = f"""
+            SELECT
+                s.interval,
+                COUNT(s.id) AS total_sig,
+                SUM(CASE WHEN o.status IN ('closed_tp', 'closed_be') THEN 1 ELSE 0 END) AS wins,
+                SUM(CASE WHEN o.status IN ('closed_sl', 'closed_fail_fast') THEN 1 ELSE 0 END) AS losses,
+                COALESCE(SUM(o.net_pnl_usd), 0.0) AS pnl_usd
+            FROM signals s
+            LEFT JOIN signal_outcomes o ON s.id = o.signal_id
+            WHERE 1=1 {time_filter}
+            GROUP BY s.interval
+            ORDER BY total_sig DESC
+        """
+        tf_rows = conn.execute(q_tf, params).fetchall()
+        tf_breakdown = {}
+        for r in tf_rows:
+            tf = r["interval"]
+            dec_tf = (r["wins"] or 0) + (r["losses"] or 0)
+            wr_tf = round((r["wins"] / dec_tf * 100.0), 1) if dec_tf > 0 else 0.0
+            tf_breakdown[tf] = {
+                "signals": r["total_sig"],
+                "wins": r["wins"] or 0,
+                "losses": r["losses"] or 0,
+                "win_rate": wr_tf,
+                "net_pnl_usd": round(r["pnl_usd"] or 0.0, 2),
+            }
+
+        # Разбивка по монетам (ТОП по PnL)
+        q_sym = f"""
+            SELECT
+                s.symbol,
+                COUNT(s.id) AS total_sig,
+                SUM(CASE WHEN o.status IN ('closed_tp', 'closed_be') THEN 1 ELSE 0 END) AS wins,
+                SUM(CASE WHEN o.status IN ('closed_sl', 'closed_fail_fast') THEN 1 ELSE 0 END) AS losses,
+                COALESCE(SUM(o.net_pnl_usd), 0.0) AS pnl_usd,
+                SUM(CASE WHEN o.tp2_hit = 1 THEN 1 ELSE 0 END) AS tp2_cnt
+            FROM signals s
+            LEFT JOIN signal_outcomes o ON s.id = o.signal_id
+            WHERE 1=1 {time_filter}
+            GROUP BY s.symbol
+            ORDER BY pnl_usd DESC, total_sig DESC
+            LIMIT 15
+        """
+        sym_rows = conn.execute(q_sym, params).fetchall()
+        symbol_breakdown = []
+        for r in sym_rows:
+            dec_s = (r["wins"] or 0) + (r["losses"] or 0)
+            wr_s = round((r["wins"] / dec_s * 100.0), 1) if dec_s > 0 else 0.0
+            symbol_breakdown.append({
+                "symbol": r["symbol"],
+                "signals": r["total_sig"],
+                "wins": r["wins"] or 0,
+                "losses": r["losses"] or 0,
+                "win_rate": wr_s,
+                "net_pnl_usd": round(r["pnl_usd"] or 0.0, 2),
+                "tp2_count": r["tp2_cnt"] or 0,
+            })
+
+        return {
+            "period": period,
+            "total_signals": total_signals,
+            "active_trades": active_cnt,
+            "closed_trades": closed_cnt,
+            "win_rate": win_rate,
+            "full_tp_wr": full_tp_wr,
+            "profit_factor": profit_factor,
+            "net_pnl_usd": round(float(row["net_pnl"] or 0.0), 2),
+            "net_pnl_r": round(float(row["net_r"] or 0.0), 2),
+            "wins": wins_cnt,
+            "losses": losses_cnt,
+            "be_count": be_cnt,
+            "avg_win_usd": round(float(row["avg_win"] or 0.0), 2),
+            "avg_loss_usd": round(float(row["avg_loss"] or 0.0), 2),
+            "best_trade_usd": round(float(row["best_trade"] or 0.0), 2),
+            "worst_trade_usd": round(float(row["worst_trade"] or 0.0), 2),
+            "tp1_count": row["tp1_cnt"] or 0,
+            "tp2_count": row["tp2_cnt"] or 0,
+            "tp3_count": row["tp3_cnt"] or 0,
+            "tp4_count": row["tp4_cnt"] or 0,
+            "sl_count": row["sl_cnt"] or 0,
+            "fail_fast_count": row["ff_cnt"] or 0,
+            "tf_breakdown": tf_breakdown,
+            "symbol_breakdown": symbol_breakdown,
+        }
+
+
+def get_active_trades_detailed(db_path: Path | str = ANALYTICS_DB_PATH) -> List[Dict[str, Any]]:
+    """
+    Возвращает список всех активных сделок с текущими ценами, расчетным PnL и статусом.
+    """
+    query = """
+        SELECT
+            s.id AS signal_id,
+            s.created_at,
+            s.symbol,
+            s.interval,
+            s.direction,
+            s.entry_price,
+            s.sl_price,
+            s.tp1_price,
+            s.tp2_price,
+            s.tp3_price,
+            s.tp4_price,
+            s.rr_ratio,
+            s.telegram_msg_id,
+            o.current_price,
+            o.pos_size_usd,
+            o.pos_size_coins,
+            o.risk_usd,
+            o.tp1_hit,
+            o.tp2_hit,
+            o.tp3_hit,
+            o.tp4_hit,
+            o.be_triggered,
+            o.bars_to_first_tp,
+            o.max_favorable,
+            o.max_adverse
+        FROM signals s
+        JOIN signal_outcomes o ON s.id = o.signal_id
+        WHERE o.status = 'active'
+        ORDER BY s.id DESC
+    """
+    with db_session(db_path) as conn:
+        rows = conn.execute(query).fetchall()
+        results = []
+        for r in rows:
+            d = dict(r)
+            entry = float(d["entry_price"])
+            cur = float(d["current_price"] or entry)
+            is_long = (d["direction"] == "LONG")
+            pos_usd = float(d["pos_size_usd"] or 0.0)
+            
+            # Расчет текущего плавающего PnL
+            if entry > 0 and pos_usd > 0:
+                pnl_pct = ((cur - entry) / entry * 100.0) if is_long else ((entry - cur) / entry * 100.0)
+                cur_pnl_usd = round(pos_usd * (pnl_pct / 100.0), 2)
+            else:
+                pnl_pct = 0.0
+                cur_pnl_usd = 0.0
+            
+            d["cur_pnl_pct"] = round(pnl_pct, 2)
+            d["cur_pnl_usd"] = cur_pnl_usd
+            results.append(d)
+        return results
+

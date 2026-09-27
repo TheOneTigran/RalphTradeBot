@@ -67,6 +67,8 @@ from analytics_db import (
     load_all_signal_keys,
 )
 from outcome_tracker import OutcomeTrackerWorker
+from runtime_settings import get_runtime_config
+from telegram_bot_ui import start_bot_ui_thread
 
 logging.basicConfig(
     level=logging.INFO,
@@ -254,6 +256,7 @@ def scan_live_pair(
     seen_signals: Set[str],
     dry_run: bool = False,
     send_tg: bool = True,
+    cfg: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Сканирует одну связку (монета, таймфрейм) на появление свежей дивергенции
@@ -381,6 +384,10 @@ def scan_live_pair(
     # Точка входа: цена закрытия W5 (или open текущей свечи если есть)
     entry_price = float(close[p2]) if p2 + 1 >= n else float(open_p[p2 + 1])
 
+    risk_budget_usd = cfg.get("risk_budget_usd", RISK_BUDGET_USD) if cfg else RISK_BUDGET_USD
+    leverage = cfg.get("default_leverage", DEFAULT_LEVERAGE) if cfg else DEFAULT_LEVERAGE
+    min_score = cfg.get("min_score", TELEGRAM_MIN_SCORE) if cfg else TELEGRAM_MIN_SCORE
+
     # 2. Расчёт профессионального торгового плана
     trade_plan = calculate_trade_plan(
         wave_points=algo_res.wave_points,
@@ -388,6 +395,8 @@ def scan_live_pair(
         entry_price=entry_price,
         buffer_pct=SL_BUFFER_PCT,
         min_rr_ratio=MIN_RR_RATIO,
+        risk_budget_usd=risk_budget_usd,
+        leverage=leverage,
     )
 
     if not trade_plan.is_viable:
@@ -515,11 +524,11 @@ def scan_live_pair(
             f"Сигнал отправляется в TG как информационный (в трекер позиций новая сделка не открывается)."
         )
 
-    # 6. Отправка подтверждённого сигнала в Telegram (Score >= 85)
+    # 6. Отправка подтверждённого сигнала в Telegram (Score >= min_score)
     sent_to_tg_flag = False
     sig_dt = df.index[p2].to_pydatetime() if isinstance(df.index, pd.DatetimeIndex) else datetime.now(timezone.utc)
     tg_msg_id = None
-    if send_tg and passed and score >= TELEGRAM_MIN_SCORE:
+    if send_tg and passed and score >= min_score:
         tg_msg_id = send_signal_to_telegram(
             chart_png=annotated_png,
             symbol=symbol,
@@ -540,6 +549,7 @@ def scan_live_pair(
             origin_div=orig_div,
             w3_longest=algo_res.details.get("w3_longest", True),
             conflict_note=conflict_note,
+            min_score=min_score,
         )
         if tg_msg_id:
             sent_to_tg_flag = True
@@ -634,13 +644,15 @@ def run_scanner_loop(
     tracker_worker = OutcomeTrackerWorker(interval_sec=scan_interval_sec)
     tracker_worker.start()
 
+    # Запуск интерактивного Telegram-бота управления и дашборда (UI)
+    bot_ui_thread = start_bot_ui_thread()
+    if bot_ui_thread:
+        logger.info("📱 Интерактивный Telegram-интерфейс запущен и ожидает команд (/menu, /stats, кнопки)")
+
     seen_signals = load_seen_signals()
     db_keys = load_all_signal_keys()
     seen_signals.update(db_keys)
     logger.info(f"Загружено ранее обработанных сигналов: {len(seen_signals)} (файл seen_signals.json + ralph_analytics.db)")
-
-    # Создаём список всех задач (символ, интервал)
-    tasks = [(s, i) for s in symbols for i in intervals]
 
     running = True
 
@@ -660,12 +672,23 @@ def run_scanner_loop(
         t_start = time.time()
         found_signals = []
 
-        logger.info(f"\n🔄 [Итерация #{scan_iteration}] Сканирование {len(tasks)} пар...")
+        # Динамическая загрузка актуальных настроек из SQLite (без перезапуска)
+        cfg = get_runtime_config()
+        if cfg.get("scanner_paused", False):
+            logger.info("⏸️ Сканер временно приостановлен пользователем через Telegram UI...")
+            time.sleep(scan_interval_sec)
+            continue
+
+        current_symbols = cfg.get("active_symbols", symbols)
+        current_intervals = cfg.get("live_timeframes", intervals)
+        tasks = [(s, i) for s in current_symbols for i in current_intervals]
+
+        logger.info(f"\n🔄 [Итерация #{scan_iteration}] Сканирование {len(tasks)} пар ({len(current_symbols)} монет на {len(current_intervals)} ТФ)...")
 
         # Параллельное сканирование пар через пул потоков
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_task = {
-                executor.submit(scan_live_pair, sym, tf, seen_signals, dry_run, send_tg): (sym, tf)
+                executor.submit(scan_live_pair, sym, tf, seen_signals, dry_run, send_tg, cfg): (sym, tf)
                 for sym, tf in tasks
             }
             for future in concurrent.futures.as_completed(future_to_task):
