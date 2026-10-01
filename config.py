@@ -42,8 +42,8 @@ OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 OPENROUTER_MODELS = [
-    "nex-agi/nex-n2.5-mini:free",
-    "nex-agi/nex-n2.5-pro:free",
+    "qwen/qwen3.8-27b:free",
+    "google/gemma-4-26b-a4b-it:free",
 ]
 
 GEMINI_MODELS = [
@@ -52,17 +52,14 @@ GEMINI_MODELS = [
     "gemini-1.5-flash",
 ]
 
-GROQ_MODELS = [
-    "llama-3.2-90b-vision-preview",
-    "llama-3.2-11b-vision-preview",
-]
+GROQ_MODELS = []
 
 # ═══════════════════════════════════════════════════════════════════════
 # Пороги фильтрации RalphTradeBot
 # ═══════════════════════════════════════════════════════════════════════
 MIN_ALGO_ELLIOTT_SCORE = 65    # Мин. балл математического детектора для отправки в Vision AI
 MIN_VISION_CONFIRM_SCORE = 70  # Мин. балл Vision AI для подтверждения в отчетах
-VISION_TIMEOUT = 60            # Таймаут запроса в секундах
+VISION_TIMEOUT = 15            # Таймаут запроса в секундах (защита от зависаний)
 VISION_TEMPERATURE = 0.1       # Температура генерации
 
 # ═══════════════════════════════════════════════════════════════════════

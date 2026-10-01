@@ -48,6 +48,7 @@ from config import (
     BREAKEVEN_AFTER_TP2, BREAKEVEN_OFFSET_PCT,
     CONFIRMED_DIR, REJECTED_DIR, RESULTS_DIR,
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+    RISK_BUDGET_USD, DEFAULT_LEVERAGE,
 )
 from elliott_detector import detect_elliott_impulse
 from chart_renderer import render_signal_chart, annotate_chart_with_analysis
@@ -278,14 +279,14 @@ def scan_live_pair(
     rsi_ob = 70.0
     rsi_os = 30.0
     pivot_order = 3
-    min_pivot_dist = 6
+    min_pivot_dist = 4
     max_pivot_dist = 45
+    max_pivot_age = 8
 
     high_pivots = argrelextrema(high, np.greater_equal, order=pivot_order)[0]
     low_pivots = argrelextrema(low, np.less_equal, order=pivot_order)[0]
 
-    # Ищем дивергенцию, триггер которой произошёл на последней или предпоследней закрытой свече
-    # Чтобы сигнал был актуальным и своевременным!
+    # Ищем дивергенцию, сформированную в пределах последних max_pivot_age закрытых свечей
     latest_candle_idx = n - 1
 
     candidates: List[Tuple[int, str, int, float, float, float, float]] = []
@@ -295,8 +296,8 @@ def scan_live_pair(
         for i in range(len(high_pivots) - 1, 0, -1):
             p2 = int(high_pivots[i])
             p1 = int(high_pivots[i - 1])
-            # Сигнал должен быть свежим (p2 не старше 3 свечей назад)
-            if (latest_candle_idx - p2) > 3:
+            # Сигнал должен быть актуальным (p2 не старше max_pivot_age свечей назад)
+            if (latest_candle_idx - p2) > max_pivot_age:
                 break
             
             dist = p2 - p1
@@ -308,7 +309,7 @@ def scan_live_pair(
             r1, r2 = float(rsi[p1]), float(rsi[p2])
             if r2 >= r1 or (r1 - r2) < 2.5:
                 continue
-            if r1 < 64.0 or r2 < 64.0:
+            if r1 < 60.0 or r2 < 45.0:
                 continue
 
             # Проверка чистоты
@@ -324,7 +325,7 @@ def scan_live_pair(
         for i in range(len(low_pivots) - 1, 0, -1):
             p2 = int(low_pivots[i])
             p1 = int(low_pivots[i - 1])
-            if (latest_candle_idx - p2) > 3:
+            if (latest_candle_idx - p2) > max_pivot_age:
                 break
             
             dist = p2 - p1
@@ -336,7 +337,7 @@ def scan_live_pair(
             r1, r2 = float(rsi[p1]), float(rsi[p2])
             if r2 <= r1 or (r2 - r1) < 2.5:
                 continue
-            if r1 > 36.0 or r2 > 36.0:
+            if r1 > 40.0 or r2 > 55.0:
                 continue
 
             # Проверка чистоты
@@ -472,8 +473,8 @@ def scan_live_pair(
         passed = vision_res["passed"]
         reason = vision_res["reason"]
 
-        # Если внешние Vision API временно лимитированы (429/offline), но импульс математически идеален
-        if vision_res.get("provider") == "fallback" and algo_res.score >= TELEGRAM_MIN_SCORE:
+        # Если внешние Vision API временно лимитированы (429/offline/fallback), но импульс математически подтверждён
+        if (vision_res.get("provider") == "fallback" or not vision_res.get("passed", False)) and algo_res.score >= min_score:
             score = int(algo_res.score)
             passed = True
             reason = f"Математический эталон Эллиотта: {algo_res.reason}"
@@ -481,7 +482,7 @@ def scan_live_pair(
 
         analysis = {
             "passed": passed, "score": score, "reason": reason,
-            "provider": vision_res.get("provider", "vision_ai") if vision_res.get("provider") != "fallback" else "algo_auditor",
+            "provider": vision_res.get("provider", "vision_ai") if (vision_res.get("provider") != "fallback" and vision_res.get("passed", False)) else "algo_auditor",
             "wave_direction": algo_res.wave_direction,
             "waves_identified": "; ".join(f"{k}: ${v:,.2f}" for k, v in sorted(algo_res.wave_points.items())),
             "rule_violations": vision_res.get("rule_violations", "none"),
@@ -701,7 +702,8 @@ def run_scanner_loop(
                     logger.debug(f"Ошибка сканирования {sym} {tf}: {e}")
 
         elapsed = time.time() - t_start
-        confirmed_cnt = len([s for s in found_signals if s.get("passed") and s.get("score", 0) >= TELEGRAM_MIN_SCORE])
+        current_min_score = cfg.get("min_score", TELEGRAM_MIN_SCORE)
+        confirmed_cnt = len([s for s in found_signals if s.get("passed") and s.get("score", 0) >= current_min_score])
         rejected_cnt = len(found_signals) - confirmed_cnt
 
         status_msg = f"⏱️ Итерация #{scan_iteration} завершена за {elapsed:.1f}с. Найдено новых сигналов: {len(found_signals)}"

@@ -13,6 +13,7 @@ telegram_notifier.py — Модуль отправки подтверждённ�
 """
 from __future__ import annotations
 
+import html
 import io
 import logging
 from datetime import datetime
@@ -94,7 +95,7 @@ def format_signal_message(
     if conflict_note:
         conflict_banner = (
             f"⚠️ <b>ИНФОРМАЦИОННЫЙ СИГНАЛ (ПОЗИЦИЯ НЕ ОТКРЫВАЕТСЯ)</b>\n"
-            f"└ <i>По активу уже сопровождается: {conflict_note}</i>\n"
+            f"└ <i>По активу уже сопровождается: {html.escape(str(conflict_note))}</i>\n"
             f"──────────────────────────\n\n"
         )
 
@@ -134,7 +135,7 @@ def format_signal_message(
             f"   └ Цель TP3: <b>{tp3_s}</b> или трейлинг по Chandelier ATR\n\n"
             f"━━━ 📋 <b>ЧТО ДЕЛАТЬ ПОСЛЕ ВХОДА (РЕГЛАМЕНТ):</b> ━━━\n\n"
             f"🛡️ <b>Безубыток:</b> Бот пришлёт ответ при взятии TP2 ➔ перенести SL в БУ (+0.1%).\n"
-            f"⏱️ <b>Таймер {fail_fast_str}:</b> Бот сам отслеживает свечи. Если импульс угаснет (< +0.4R), бот пришлёт команду закрыть остаток по рынку (Fail-Fast).\n\n"
+            f"⏱️ <b>Таймер {fail_fast_str}:</b> Бот сам отслеживает свечи. Если импульс угаснет (менее +0.4R), бот пришлёт команду закрыть остаток по рынку (Fail-Fast).\n\n"
             f"📊 R:R (средневзвешенный): <b>{trade_plan.rr_ratio:.1f} : 1</b>\n"
             f"📈 RSI: <b>{swept_rsi:.1f} ➔ {signal_rsi:.1f}</b> (дивергенция)\n\n"
         )
@@ -168,6 +169,8 @@ def format_signal_message(
         )
         w_struct_block = ""
 
+    safe_reason = html.escape(str(reason))
+
     msg = (
         f"{conflict_banner}"
         f"{header}\n\n"
@@ -176,7 +179,7 @@ def format_signal_message(
         f"{plan_block}"
         f"{w_struct_block}"
         f"━━━ <b>ОБОСНОВАНИЕ</b> ━━━\n\n"
-        f"{reason}\n\n"
+        f"{safe_reason}\n\n"
         f"🎯 Оценка ИИ: <b>{score}/100</b> (Textbook)\n"
         f"📅 {dt_str}"
     )
@@ -201,6 +204,27 @@ def _send_tg_request(method_url: str, is_json: bool = False, retry_count: int = 
             if resp.status_code == 200 and resp.json().get("ok"):
                 return resp
             
+            # Если ошибка парсинга HTML сущностей (400) — отправляем без parse_mode как чистый текст (гарантия доставки)
+            if resp.status_code == 400 and "can't parse entities" in resp.text:
+                logger.warning("⚠️ Ошибка HTML парсера Telegram. Пробуем повторную отправку без parse_mode...")
+                if is_json and "json" in kwargs:
+                    fb_json = dict(kwargs["json"])
+                    fb_json.pop("parse_mode", None)
+                    fb_resp = requests.post(method_url, json=fb_json, timeout=kwargs.get("timeout", 20))
+                    if fb_resp.status_code == 200 and fb_resp.json().get("ok"):
+                        return fb_resp
+                elif "data" in kwargs:
+                    fb_data = dict(kwargs["data"])
+                    fb_data.pop("parse_mode", None)
+                    # Если есть файлы, перематываем BytesIO в начало
+                    if "files" in kwargs:
+                        for k, v in kwargs["files"].items():
+                            if hasattr(v[1], "seek"):
+                                v[1].seek(0)
+                    fb_resp = requests.post(method_url, data=fb_data, files=kwargs.get("files"), timeout=kwargs.get("timeout", 25))
+                    if fb_resp.status_code == 200 and fb_resp.json().get("ok"):
+                        return fb_resp
+
             # Если словили лимит Telegram 429
             if resp.status_code == 429:
                 wait_sec = resp.json().get("parameters", {}).get("retry_after", 3)

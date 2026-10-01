@@ -404,7 +404,7 @@ def track_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> int:
             if tg_msg_id:
                 ff_text = (
                     f"⏱ <b>ВРЕМЕННОЙ СТОП (FAIL-FAST — {time_name}):</b>\n\n"
-                    f"⚠️ Прошло 3 свечи ({time_name}). Импульс угас, цена топчется на месте (прибыль < +0.4R).\n"
+                    f"⚠️ Прошло 3 свечи ({time_name}). Импульс угас, цена топчется на месте (прибыль менее +0.4R).\n"
                     f"👉 <b>ДЕЙСТВИЕ:</b> Закрой остаток позиции <b>по рынку (Market Close)</b>!\n\n"
                     f"📊 Текущий PnL с вычетом комиссий: <b>{ff_net_usd:+.2f}$</b> ({cur_pnl_pct:+.2f}%).\n"
                     f"🛡️ <i>Правило Fail-Fast отсекает 80% затяжных стопов.</i>"

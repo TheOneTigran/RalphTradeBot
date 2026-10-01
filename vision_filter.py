@@ -101,7 +101,7 @@ def _try_openrouter(data_url: str, prompt: str) -> Optional[Dict[str, Any]]:
             
             resp = session.post(
                 OPENROUTER_API_URL, headers=headers, 
-                json=payload, timeout=(15.0, 45.0)
+                json=payload, timeout=(5.0, 15.0)
             )
             
             if resp.status_code == 200:
