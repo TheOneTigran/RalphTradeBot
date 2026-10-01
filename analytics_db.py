@@ -89,6 +89,10 @@ def _migrate_schema(conn: sqlite3.Connection):
             );
             """
         )
+
+        # Добавляем detection_ts — Unix timestamp момента реальной отправки сигнала
+        if "detection_ts" not in cols_sig:
+            conn.execute("ALTER TABLE signals ADD COLUMN detection_ts INTEGER;")
     except Exception as e:
         logger.warning(f"Предупреждение при миграции схемы: {e}")
 
@@ -367,7 +371,7 @@ def save_signal(
                 rr_ratio, impulse_pct, sl_pct, sent_to_telegram, telegram_msg_id,
                 w0_price, w1_price, w2_price, w3_price, w4_price, w5_price,
                 wave_direction, origin_div, w3_longest, dur_bars, dur_hours,
-                bar_timestamp
+                bar_timestamp, detection_ts
             ) VALUES (
                 ?, ?, ?, ?,
                 ?, ?, ?, ?,
@@ -375,7 +379,7 @@ def save_signal(
                 ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
-                ?
+                ?, ?
             )
             """,
             (
@@ -410,6 +414,7 @@ def save_signal(
                 data.get("dur_bars", 0),
                 data.get("dur_hours", 0.0),
                 bar_ts,
+                data.get("detection_ts"),
             ),
         )
         signal_id = cursor.lastrowid
@@ -488,6 +493,7 @@ def get_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> List[Dict[str
             s.direction,
             s.entry_price,
             s.sl_price,
+            s.sl_pct,
             s.tp1_price,
             s.tp2_price,
             s.tp3_price,
@@ -497,6 +503,7 @@ def get_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> List[Dict[str
             s.sent_to_telegram,
             s.telegram_msg_id,
             s.bar_timestamp,
+            s.detection_ts,
             o.current_price,
             o.tp1_hit,
             o.tp1_hit_at,

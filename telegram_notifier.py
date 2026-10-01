@@ -37,6 +37,16 @@ def _fmt_p(p: float) -> str:
     else:
         return f"${p:,.6f}"
 
+def _fmt_pc(p: float) -> str:
+    """Форматирует цену для копирования одним кликом (обёрнуто в <code> тег Telegram).
+    Возвращает чистое число без $ — чтобы сразу вставить в ордер на бирже."""
+    if p >= 1000.0:
+        return f"<code>{p:.2f}</code>"
+    elif p >= 1.0:
+        return f"<code>{p:.4f}</code>"
+    else:
+        return f"<code>{p:.6f}</code>"
+
 
 def _fmt_vol(v: float) -> str:
     """Форматирует объем в USDT."""
@@ -99,15 +109,18 @@ def format_signal_message(
             f"──────────────────────────\n\n"
         )
 
-    fail_fast_str = "45 минут (3 свечи)" if interval == "15m" else ("3 часа (3 свечи)" if interval == "1h" else "3 свечи")
+    fail_fast_map = {"5m": "30 минут (6 свечей)", "15m": "45 минут (3 свечи)", "1h": "3 часа (3 свечи)", "4h": "8 часов (2 свечи)"}
+    fail_fast_str = fail_fast_map.get(interval, "3 свечи")
 
     # Если есть TradePlan
     if trade_plan is not None:
-        entry_s = _fmt_p(trade_plan.entry_price)
-        sl_s = _fmt_p(trade_plan.sl_price)
-        tp1_s = _fmt_p(trade_plan.tp1_price)
-        tp2_s = _fmt_p(trade_plan.tp2_price)
-        tp3_s = _fmt_p(trade_plan.tp3_price)
+        # _fmt_pc: цена для копирования (чистое число в <code>)
+        # _fmt_p: цена для отображения (с $)
+        entry_c = _fmt_pc(trade_plan.entry_price)
+        sl_c = _fmt_pc(trade_plan.sl_price)
+        tp1_c = _fmt_pc(trade_plan.tp1_price)
+        tp2_c = _fmt_pc(trade_plan.tp2_price)
+        tp3_c = _fmt_pc(trade_plan.tp3_price)
 
         pos_vol_str = _fmt_vol(getattr(trade_plan, 'pos_size_usd', 0.0))
         coins_str = _fmt_coins(getattr(trade_plan, 'pos_size_coins', 0.0))
@@ -122,17 +135,17 @@ def format_signal_message(
 
         plan_block = (
             f"━━━ 🎯 <b>КУДА И ЧТО ВЫСТАВЛЯТЬ (ОРДЕРА):</b> ━━━\n\n"
-            f"1️⃣ {dir_badge} │ Вход: <b>{entry_s}</b>\n"
+            f"1️⃣ {dir_badge} │ Вход: {entry_c}\n"
             f"   └ Объем: <b>{pos_vol_str}</b> (<b>{coins_str}</b> монет)\n"
             f"   └ Реком. маржа: <b>{margin_str}</b> (плечо {lev}x / риск ${risk_usd:.1f})\n\n"
-            f"2️⃣ 🛑 <b>STOP LOSS:</b> <b>{sl_s}</b> (−{trade_plan.sl_pct:.2f}%)\n"
+            f"2️⃣ 🛑 <b>STOP LOSS:</b> {sl_c} (−{trade_plan.sl_pct:.2f}%)\n"
             f"   {sl_note}\n\n"
-            f"3️⃣ 🎯 <b>TP1 (23.6% Фибо):</b> <b>{tp1_s}</b> (+{trade_plan.tp1_pct:.2f}%)\n"
+            f"3️⃣ 🎯 <b>TP1 (23.6% Фибо):</b> {tp1_c} (+{trade_plan.tp1_pct:.2f}%)\n"
             f"   └ Тип: Limit │ <b>Закрыть {int(trade_plan.tp1_share*100)}%</b> ({tp1_vol_s} / {tp1_coins_s} монет)\n\n"
-            f"4️⃣ 🎯 <b>TP2 (38.2% Фибо):</b> <b>{tp2_s}</b> (+{trade_plan.tp2_pct:.2f}%)\n"
+            f"4️⃣ 🎯 <b>TP2 (38.2% Фибо):</b> {tp2_c} (+{trade_plan.tp2_pct:.2f}%)\n"
             f"   └ Тип: Limit │ <b>Закрыть {int(trade_plan.tp2_share*100)}%</b> ({tp2_vol_s} / {tp2_coins_s} монет)\n\n"
             f"5️⃣ 🏃 <b>Остаток {int(trade_plan.tp3_share*100)}% (Раннер):</b>\n"
-            f"   └ Цель TP3: <b>{tp3_s}</b> или трейлинг по Chandelier ATR\n\n"
+            f"   └ Цель TP3: {tp3_c} или трейлинг по Chandelier ATR\n\n"
             f"━━━ 📋 <b>ЧТО ДЕЛАТЬ ПОСЛЕ ВХОДА (РЕГЛАМЕНТ):</b> ━━━\n\n"
             f"🛡️ <b>Безубыток:</b> Бот пришлёт ответ при взятии TP2 ➔ перенести SL в БУ (+0.1%).\n"
             f"⏱️ <b>Таймер {fail_fast_str}:</b> Бот сам отслеживает свечи. Если импульс угаснет (менее +0.4R), бот пришлёт команду закрыть остаток по рынку (Fail-Fast).\n\n"

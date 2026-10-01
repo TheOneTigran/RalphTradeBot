@@ -43,7 +43,7 @@ from config import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
 )
-from telegram_notifier import send_trade_update_reply, _fmt_p, _fmt_vol
+from telegram_notifier import send_trade_update_reply, _fmt_p, _fmt_pc, _fmt_vol
 
 logger = logging.getLogger("RalphOutcomeTracker")
 
@@ -117,6 +117,16 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
     sl_pct = float(signal.get("sl_pct", 1.5))
     interval = signal.get("interval", "15m")
 
+    # Определяем динамический порог Fail-Fast в зависимости от ТФ
+    # 5m=6 баров (30 мин), 15m=3 бара (45 мин), 1h=3 бара (3ч), 4h=2 бара (8ч)
+    ff_bars_map = {"5m": 6, "15m": 3, "1h": 3, "4h": 2, "1d": 2}
+    effective_ff_bars = ff_bars_map.get(interval, FAIL_FAST_BARS)
+
+    # Определяем стартовую точку для отсчёта баров:
+    # Используем detection_ts (когда сигнал был реально отправлен пользователю)
+    # вместо bar_timestamp W5, чтобы пользователь успел увидеть сигнал
+    detection_ts = signal.get("detection_ts") or signal.get("created_at_ts")
+
     tp1_hit = bool(signal.get("tp1_hit", 0))
     tp1_hit_at = signal.get("tp1_hit_at")
     tp2_hit = bool(signal.get("tp2_hit", 0))
@@ -140,13 +150,22 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
     max_adverse = float(signal.get("max_adverse", 0.0))
 
     # Находим индекс свечи входа
+    # Приоритет: detection_ts (когда сигнал реально отправлен), затем bar_ts (W5 бар)
+    ref_ts = detection_ts or bar_ts
     entry_idx = -1
-    if bar_ts:
+    if ref_ts:
         for idx, c in enumerate(candles):
             c_ts_sec = c["open_time"] // 1000
-            if abs(c_ts_sec - bar_ts) <= 60 or abs(c["open_time"] - bar_ts) <= 60000:
+            if abs(c_ts_sec - ref_ts) <= 60 or abs(c["open_time"] - ref_ts) <= 60000:
                 entry_idx = idx
                 break
+        # Если detection_ts не найден в свечах, фоллбэк на bar_ts
+        if entry_idx == -1 and ref_ts != bar_ts and bar_ts:
+            for idx, c in enumerate(candles):
+                c_ts_sec = c["open_time"] // 1000
+                if abs(c_ts_sec - bar_ts) <= 60 or abs(c["open_time"] - bar_ts) <= 60000:
+                    entry_idx = idx
+                    break
 
     eval_candles = candles[entry_idx + 1 :] if entry_idx != -1 else candles[-50:]
     if not eval_candles:
@@ -184,19 +203,23 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
                 if bars_to_first_tp == 0:
                     bars_to_first_tp = bar_counter
 
-            # TP2 (30%) -> Активация безубытка
+            # TP2 (30%) -> Активация безубытка НА СЛЕДУЮЩЕМ баре (не на этом же)
             if high_p >= tp2 and not tp2_hit:
                 tp2_hit = True
                 tp2_hit_at = c_time_iso
-                be_active = BREAKEVEN_AFTER_TP2
+                # НЕ активируем be_active на этом же баре!
+                # be_active будет проверен на следующей итерации цикла
+                # (см. проверку be_active перед циклом: tp2_hit and BREAKEVEN_AFTER_TP2)
+                # Здесь мы НЕ ставим be_active = True, чтобы на ЭТОМ же баре
+                # не мог сработать безубыток. be_active включится на СЛЕДУЮЩЕМ баре.
 
             # TP3
             if high_p >= tp3 and not tp3_hit:
                 tp3_hit = True
                 tp3_hit_at = c_time_iso
 
-            # Fail-Fast Time-Stop на баре 3 (45 мин для 15m, 3 часа для 1h)
-            if bar_counter >= FAIL_FAST_BARS and not tp1_hit and not tp2_hit and not fail_fast_triggered:
+            # Fail-Fast Time-Stop (динамический порог по ТФ)
+            if bar_counter >= effective_ff_bars and not tp1_hit and not tp2_hit and not fail_fast_triggered:
                 cur_profit_pct = (close_p - entry) / entry * 100.0
                 cur_r = cur_profit_pct / sl_pct if sl_pct > 0 else 0.0
                 if cur_r < FAIL_FAST_MIN_R:
@@ -208,7 +231,9 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
                     break
 
             # Проверка Стоп-лосса / Безубытка
-            if be_active:
+            # be_active включается ТОЛЬКО если tp2_hit был установлен на ПРЕДЫДУЩЕМ баре
+            # (не на текущем — см. блок TP2 выше)
+            if be_active and not (tp2_hit and tp2_hit_at == c_time_iso):
                 if low_p <= be_price:
                     be_triggered = True
                     be_hit_at = c_time_iso
@@ -240,19 +265,19 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
                 if bars_to_first_tp == 0:
                     bars_to_first_tp = bar_counter
 
-            # TP2 (30%) -> Активация безубытка
+            # TP2 (30%) -> Активация безубытка НА СЛЕДУЮЩЕМ баре
             if low_p <= tp2 and not tp2_hit:
                 tp2_hit = True
                 tp2_hit_at = c_time_iso
-                be_active = BREAKEVEN_AFTER_TP2
+                # НЕ активируем be_active на этом же баре (аналогично LONG)
 
             # TP3
             if low_p <= tp3 and not tp3_hit:
                 tp3_hit = True
                 tp3_hit_at = c_time_iso
 
-            # Fail-Fast Time-Stop на баре 3
-            if bar_counter >= FAIL_FAST_BARS and not tp1_hit and not tp2_hit and not fail_fast_triggered:
+            # Fail-Fast Time-Stop (динамический порог по ТФ)
+            if bar_counter >= effective_ff_bars and not tp1_hit and not tp2_hit and not fail_fast_triggered:
                 cur_profit_pct = (entry - close_p) / entry * 100.0
                 cur_r = cur_profit_pct / sl_pct if sl_pct > 0 else 0.0
                 if cur_r < FAIL_FAST_MIN_R:
@@ -263,8 +288,8 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
                     final_pnl = round(cur_profit_pct, 2)
                     break
 
-            # Проверка Стоп-лосса / Безубытка
-            if be_active:
+            # Проверка Стоп-лосса / Безубытка (SHORT: same-bar guard)
+            if be_active and not (tp2_hit and tp2_hit_at == c_time_iso):
                 if high_p >= be_price:
                     be_triggered = True
                     be_hit_at = c_time_iso
@@ -371,9 +396,9 @@ def track_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> int:
             updates["notified_tp1"] = 1
             if tg_msg_id:
                 tp1_text = (
-                    f"🎯 <b>TP1 ВЗЯТ по цене {_fmt_p(tp1)} (+{tp1_gain_pct:.2f}%)!</b>\n\n"
+                    f"🎯 <b>TP1 ВЗЯТ по цене {_fmt_pc(tp1)} (+{tp1_gain_pct:.2f}%)!</b>\n\n"
                     f"✅ Зафиксировано <b>{int(tp1_share*100)}% позиции</b>: <b>+${tp1_net_usd:.2f}</b> чистыми (с вычетом комиссий).\n"
-                    f"👉 <b>ДЕЙСТВИЕ:</b> Держи лимитный ордер на TP2 (<b>{_fmt_p(tp2)}</b>)."
+                    f"👉 <b>ДЕЙСТВИЕ:</b> Держи лимитный ордер на TP2 ({_fmt_pc(tp2)})."
                 )
                 send_trade_update_reply(reply_to_message_id=tg_msg_id, text=tp1_text)
                 logger.info(f"📤 Отправлено уведомление TP1 для #{sig_id} {sym}")
@@ -382,12 +407,12 @@ def track_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> int:
         if updates.get("tp2_hit") and not sig.get("notified_tp2"):
             updates["notified_tp2"] = 1
             if tg_msg_id:
-                be_price_s = _fmt_p(entry * (1.001 if direction == "LONG" else 0.999))
+                be_price_c = _fmt_pc(entry * (1.001 if direction == "LONG" else 0.999))
                 tp2_text = (
-                    f"🎯 <b>TP2 ВЗЯТ по цене {_fmt_p(tp2)} (+{tp2_gain_pct:.2f}%)!</b>\n\n"
+                    f"🎯 <b>TP2 ВЗЯТ по цене {_fmt_pc(tp2)} (+{tp2_gain_pct:.2f}%)!</b>\n\n"
                     f"✅ Зафиксировано ещё <b>{int(tp2_share*100)}% позиции</b> (суммарно взято <b>+${cum_tp_profit_usd:.2f}</b> чистыми).\n"
-                    f"👉 <b>СРОЧНОЕ ДЕЙСТВИЕ:</b> Перенеси Stop Loss в <b>БЕЗУБЫТОК</b> на цену входа (<b>{be_price_s}</b>)!\n\n"
-                    f"🏃 Остаток 30% сопровождаем по трейлингу или ждём цель TP3 (<b>{_fmt_p(tp3)}</b>)."
+                    f"👉 <b>СРОЧНОЕ ДЕЙСТВИЕ:</b> Перенеси Stop Loss в <b>БЕЗУБЫТОК</b> на цену {be_price_c}\n\n"
+                    f"🏃 Остаток 30% сопровождаем по трейлингу или ждём цель TP3 ({_fmt_pc(tp3)})."
                 )
                 send_trade_update_reply(reply_to_message_id=tg_msg_id, text=tp2_text)
                 logger.info(f"📤 Отправлено уведомление TP2 + Безубыток для #{sig_id} {sym}")
@@ -399,7 +424,8 @@ def track_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> int:
             cur_pnl_pct = updates.get("final_pnl_pct", 0.0)
             ff_net_usd = (pos_size_usd * (cur_pnl_pct / 100.0)) - (pos_size_usd * fee_roundtrip)
             updates["net_pnl_usd"] = round(ff_net_usd, 2)
-            time_name = "45 минут (3 свечи 15m)" if tf == "15m" else ("3 часа (3 свечи 1h)" if tf == "1h" else "3 свечи")
+            time_name_map = {"5m": "30 минут (6 свечей 5m)", "15m": "45 минут (3 свечи 15m)", "1h": "3 часа (3 свечи 1h)", "4h": "8 часов (2 свечи 4h)"}
+            time_name = time_name_map.get(tf, f"{tf} свечи")
 
             if tg_msg_id:
                 ff_text = (
@@ -418,7 +444,7 @@ def track_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> int:
             updates["net_pnl_usd"] = -risk_usd
             if tg_msg_id:
                 sl_text = (
-                    f"🛑 <b>СТОП-ЛОСС СРАБОТАЛ по цене {_fmt_p(sl)}!</b>\n\n"
+                    f"🛑 <b>СТОП-ЛОСС СРАБОТАЛ по цене {_fmt_pc(sl)}!</b>\n\n"
                     f"❌ Убыток по сделке: <b>-${risk_usd:.2f}</b> (-1.0R с учётом комиссий).\n"
                     f"Позиция полностью закрыта."
                 )
@@ -430,9 +456,9 @@ def track_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> int:
             updates["notified_closed"] = 1
             updates["net_pnl_usd"] = round(cum_tp_profit_usd, 2)
             if tg_msg_id:
-                be_p_s = _fmt_p(entry * (1.001 if direction == "LONG" else 0.999))
+                be_p_c = _fmt_pc(entry * (1.001 if direction == "LONG" else 0.999))
                 be_text = (
-                    f"🛡️ <b>БЕЗУБЫТОК СРАБОТАЛ по цене {be_p_s}!</b>\n\n"
+                    f"🛡️ <b>БЕЗУБЫТОК СРАБОТАЛ по цене {be_p_c}!</b>\n\n"
                     f"✅ Оставшаяся часть позиции закрыта в точке безубытка (+0.1%).\n"
                     f"💰 Итоговая чистая прибыль по сделке: <b>+${cum_tp_profit_usd:.2f}</b> (с учётом зафиксированных TP1 и TP2).\n"
                     f"Сделка успешно завершена в плюс!"

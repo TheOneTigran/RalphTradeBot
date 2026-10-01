@@ -559,9 +559,12 @@ def scan_live_pair(
             logger.error(f"❌ Ошибка отправки сигнала в Telegram: {symbol} {interval}")
 
     # 7. Сохранение сигнала в SQLite базу аналитики
+    # detection_ts — Unix timestamp реальной отправки (для Fail-Fast отсчёта)
+    detection_ts_unix = int(datetime.now(timezone.utc).timestamp())
     try:
         sig_data_db = {
             "created_at": sig_dt.isoformat(),
+            "detection_ts": detection_ts_unix,
             "symbol": symbol,
             "interval": interval,
             "direction": direction,
