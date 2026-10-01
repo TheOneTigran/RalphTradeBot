@@ -42,9 +42,9 @@ OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 OPENROUTER_MODELS = [
-    "inclusionai/ling-3.0-flash-vl",
     "google/gemma-4-26b-a4b-it:free",
     "qwen/qwen3.8-27b:free",
+    "inclusionai/ling-3.0-flash-vl",
 ]
 
 GEMINI_MODELS = [

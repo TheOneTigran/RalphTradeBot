@@ -105,6 +105,10 @@ def _try_openrouter(data_url: str, prompt: str) -> Optional[Dict[str, Any]]:
     }
     
     for model in OPENROUTER_MODELS:
+        is_free = ":free" in model
+        # Для бесплатных моделей ставим короткий таймаут (3s connect, 8s read),
+        # чтобы бот не зависал в перегруженной очереди, а мгновенно переключался на резерв
+        model_timeout = (3.0, 8.0) if is_free else (5.0, 25.0)
         try:
             payload = {
                 "model": model,
@@ -121,7 +125,7 @@ def _try_openrouter(data_url: str, prompt: str) -> Optional[Dict[str, Any]]:
             
             resp = session.post(
                 OPENROUTER_API_URL, headers=headers, 
-                json=payload, timeout=(5.0, 30.0)
+                json=payload, timeout=model_timeout
             )
             
             if resp.status_code == 200:
