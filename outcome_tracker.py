@@ -172,7 +172,6 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
         return {}
 
     current_price = eval_candles[-1]["close"]
-    be_active = (tp2_hit and BREAKEVEN_AFTER_TP2) or be_triggered
     be_price = (
         entry * (1.0 + BREAKEVEN_OFFSET_PCT / 100.0)
         if direction == "LONG"
@@ -180,6 +179,7 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
     )
 
     bar_counter = 0
+    tp2_bar_idx: Optional[int] = None
 
     for c in eval_candles:
         bar_counter += 1
@@ -203,15 +203,16 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
                 if bars_to_first_tp == 0:
                     bars_to_first_tp = bar_counter
 
-            # TP2 (30%) -> Активация безубытка НА СЛЕДУЮЩЕМ баре (не на этом же)
+            # TP2 (30%) -> Активация безубытка СТРОГО на последующих барах
             if high_p >= tp2 and not tp2_hit:
                 tp2_hit = True
                 tp2_hit_at = c_time_iso
-                # НЕ активируем be_active на этом же баре!
-                # be_active будет проверен на следующей итерации цикла
-                # (см. проверку be_active перед циклом: tp2_hit and BREAKEVEN_AFTER_TP2)
-                # Здесь мы НЕ ставим be_active = True, чтобы на ЭТОМ же баре
-                # не мог сработать безубыток. be_active включится на СЛЕДУЮЩЕМ баре.
+                tp2_bar_idx = bar_counter
+            elif tp2_hit and tp2_bar_idx is None:
+                if tp2_hit_at and c_time_iso == tp2_hit_at:
+                    tp2_bar_idx = bar_counter
+                elif high_p >= tp2:
+                    tp2_bar_idx = bar_counter
 
             # TP3
             if high_p >= tp3 and not tp3_hit:
@@ -231,9 +232,9 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
                     break
 
             # Проверка Стоп-лосса / Безубытка
-            # be_active включается ТОЛЬКО если tp2_hit был установлен на ПРЕДЫДУЩЕМ баре
-            # (не на текущем — см. блок TP2 выше)
-            if be_active and not (tp2_hit and tp2_hit_at == c_time_iso):
+            # Безубыток разрешён ТОЛЬКО если TP2 был взят на ПРЕДЫДУЩЕМ баре (bar_counter > tp2_bar_idx)
+            is_be_eligible = (BREAKEVEN_AFTER_TP2 and tp2_bar_idx is not None and bar_counter > tp2_bar_idx) or be_triggered
+            if is_be_eligible:
                 if low_p <= be_price:
                     be_triggered = True
                     be_hit_at = c_time_iso
@@ -265,11 +266,16 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
                 if bars_to_first_tp == 0:
                     bars_to_first_tp = bar_counter
 
-            # TP2 (30%) -> Активация безубытка НА СЛЕДУЮЩЕМ баре
+            # TP2 (30%) -> Активация безубытка СТРОГО на последующих барах
             if low_p <= tp2 and not tp2_hit:
                 tp2_hit = True
                 tp2_hit_at = c_time_iso
-                # НЕ активируем be_active на этом же баре (аналогично LONG)
+                tp2_bar_idx = bar_counter
+            elif tp2_hit and tp2_bar_idx is None:
+                if tp2_hit_at and c_time_iso == tp2_hit_at:
+                    tp2_bar_idx = bar_counter
+                elif low_p <= tp2:
+                    tp2_bar_idx = bar_counter
 
             # TP3
             if low_p <= tp3 and not tp3_hit:
@@ -288,8 +294,9 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
                     final_pnl = round(cur_profit_pct, 2)
                     break
 
-            # Проверка Стоп-лосса / Безубытка (SHORT: same-bar guard)
-            if be_active and not (tp2_hit and tp2_hit_at == c_time_iso):
+            # Проверка Стоп-лосса / Безубытка (SHORT: строго bar_counter > tp2_bar_idx)
+            is_be_eligible = (BREAKEVEN_AFTER_TP2 and tp2_bar_idx is not None and bar_counter > tp2_bar_idx) or be_triggered
+            if is_be_eligible:
                 if high_p >= be_price:
                     be_triggered = True
                     be_hit_at = c_time_iso
@@ -441,15 +448,35 @@ def track_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> int:
         # ── 4. Уведомление: Сработал Стоп-Лосс ────────────────────────────────
         if new_status == "closed_sl" and not sig.get("notified_closed"):
             updates["notified_closed"] = 1
-            updates["net_pnl_usd"] = -risk_usd
-            if tg_msg_id:
+            has_tp1 = bool(updates.get("tp1_hit") or sig.get("tp1_hit"))
+            if has_tp1:
+                # 40% позиции уже зафиксировано на TP1 в плюс!
+                # Стоп-лосс сработал только по оставшимся 60% позиции
+                rem_share = 1.0 - tp1_share
+                rem_sl_usd = rem_share * risk_usd
+                net_pnl_usd = round(tp1_net_usd - rem_sl_usd, 2)
+                net_r = net_pnl_usd / risk_usd if risk_usd > 0 else 0.0
+                updates["net_pnl_usd"] = net_pnl_usd
+
+                sign_str = "+" if net_pnl_usd > 0 else ""
+                icon = "🟡" if net_pnl_usd >= 0 else "❌"
+                sl_text = (
+                    f"🛑 <b>СТОП-ЛОСС СРАБОТАЛ по цене {_fmt_pc(sl)}!</b>\n\n"
+                    f"ℹ️ Ранее на TP1 было зафиксировано <b>{int(tp1_share*100)}%</b>: <b>+${tp1_net_usd:.2f}</b> чистыми.\n"
+                    f"Оставшаяся часть позиции (<b>{int(rem_share*100)}%</b>) закрыта по SL (-${rem_sl_usd:.2f}).\n\n"
+                    f"{icon} <b>Итоговый чистый PnL по сделке: {sign_str}${net_pnl_usd:.2f} ({net_r:+.2f}R с учётом комиссий).</b>\n"
+                    f"Позиция полностью закрыта."
+                )
+            else:
+                updates["net_pnl_usd"] = -risk_usd
                 sl_text = (
                     f"🛑 <b>СТОП-ЛОСС СРАБОТАЛ по цене {_fmt_pc(sl)}!</b>\n\n"
                     f"❌ Убыток по сделке: <b>-${risk_usd:.2f}</b> (-1.0R с учётом комиссий).\n"
                     f"Позиция полностью закрыта."
                 )
+            if tg_msg_id:
                 send_trade_update_reply(reply_to_message_id=tg_msg_id, text=sl_text)
-                logger.info(f"📤 Отправлено уведомление SL для #{sig_id} {sym}")
+                logger.info(f"📤 Отправлено уведомление SL для #{sig_id} {sym} (Net PnL: ${updates.get('net_pnl_usd')})")
 
         # ── 5. Уведомление: Сработал Безубыток (после взятия TP2) ──────────────
         if new_status == "closed_be" and not sig.get("notified_closed"):

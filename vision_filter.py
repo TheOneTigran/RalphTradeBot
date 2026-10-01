@@ -54,20 +54,40 @@ def _parse_json_response(content: str) -> Dict[str, Any]:
         raise ValueError("Пустой ответ модели")
         
     if "```json" in content:
-        clean = content.split("```json")[1].split("```")[0].strip()
+        parts = content.split("```json")
+        for p in reversed(parts[1:]):
+            clean = p.split("```")[0].strip()
+            try:
+                return json.loads(clean)
+            except Exception:
+                continue
     elif "```" in content:
-        clean = content.split("```")[1].split("```")[0].strip()
-    else:
-        clean = content.strip()
+        parts = content.split("```")
+        for part in reversed(parts):
+            clean = part.strip()
+            if clean.startswith("{") and clean.endswith("}"):
+                try:
+                    return json.loads(clean)
+                except Exception:
+                    continue
     
-    try:
-        return json.loads(clean)
-    except Exception:
-        s = content.find("{")
-        e = content.rfind("}")
-        if s != -1 and e != -1 and e > s:
+    # Сначала пробуем последний JSON-блок (если перед ним был reasoning)
+    s_last = content.rfind("{")
+    e_last = content.rfind("}")
+    if s_last != -1 and e_last != -1 and e_last > s_last:
+        try:
+            return json.loads(content[s_last : e_last + 1])
+        except Exception:
+            pass
+
+    s = content.find("{")
+    e = content.rfind("}")
+    if s != -1 and e != -1 and e > s:
+        try:
             return json.loads(content[s : e + 1])
-        raise ValueError(f"JSON не найден в ответе: {content[:120]}...")
+        except Exception:
+            pass
+    raise ValueError(f"JSON не найден в ответе: {content[:120]}...")
 
 
 def _try_openrouter(data_url: str, prompt: str) -> Optional[Dict[str, Any]]:
@@ -96,12 +116,12 @@ def _try_openrouter(data_url: str, prompt: str) -> Optional[Dict[str, Any]]:
                     ],
                 }],
                 "temperature": VISION_TEMPERATURE,
-                "max_tokens": 1500,
+                "max_tokens": 2048,
             }
             
             resp = session.post(
                 OPENROUTER_API_URL, headers=headers, 
-                json=payload, timeout=(5.0, 15.0)
+                json=payload, timeout=(5.0, 30.0)
             )
             
             if resp.status_code == 200:

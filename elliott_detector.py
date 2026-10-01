@@ -533,6 +533,12 @@ def detect_elliott_impulse(
         else:
             score_eff = 2.0
 
+        # Временная пропорция: W3 не должна быть многократным боковым распилом
+        dur_w1 = cand["dur_w1"]
+        dur_w3 = cand["dur_w3"]
+        if dur_w3 >= 6 * max(1, dur_w1) and eff_3 < 0.45:
+            score_eff -= 15.0  # Штраф за искусственную растянутость во флэте
+
         # ── 5. RSI Анализ истощения W0 и моментума волн (до 25 pts) ──
         score_rsi = 0.0
         w0_rsi_val = None
