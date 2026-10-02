@@ -473,16 +473,16 @@ def scan_live_pair(
         passed = vision_res["passed"]
         reason = vision_res["reason"]
 
-        # Если внешние Vision API временно лимитированы (429/offline/fallback), но импульс математически подтверждён
-        if (vision_res.get("provider") == "fallback" or not vision_res.get("passed", False)) and algo_res.score >= min_score:
-            score = int(algo_res.score)
-            passed = True
-            reason = f"Математический эталон Эллиотта: {algo_res.reason}"
-            logger.info(f"✨ Математический эталон подтверждён (Vision API offline/fallback): {symbol} {interval} {direction} (Score: {score})")
+        # Уважаем вердикт Vision AI: если нейросеть отклонила сигнал (Score < MIN_VISION_CONFIRM_SCORE), сделка бракуется!
+        if not passed:
+            if vision_res.get("provider") == "fallback":
+                logger.warning(f"⚠️ Все Vision API офлайн для {symbol} {interval} {direction}. Сигнал отклонён в целях безопасности депозита.")
+            else:
+                logger.info(f"🚫 Vision AI ({vision_res.get('provider')}) отклонил сигнал: {symbol} {interval} {direction} (Score: {score}, Reason: {reason})")
 
         analysis = {
             "passed": passed, "score": score, "reason": reason,
-            "provider": vision_res.get("provider", "vision_ai") if (vision_res.get("provider") != "fallback" and vision_res.get("passed", False)) else "algo_auditor",
+            "provider": vision_res.get("provider", "vision_ai"),
             "wave_direction": algo_res.wave_direction,
             "waves_identified": "; ".join(f"{k}: ${v:,.2f}" for k, v in sorted(algo_res.wave_points.items())),
             "rule_violations": vision_res.get("rule_violations", "none"),
