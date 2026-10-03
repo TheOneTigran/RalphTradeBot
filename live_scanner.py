@@ -68,7 +68,7 @@ from analytics_db import (
     load_all_signal_keys,
 )
 from outcome_tracker import OutcomeTrackerWorker
-from runtime_settings import get_runtime_config
+from runtime_settings import get_runtime_config, is_night_mode_active, get_msk_time
 from telegram_bot_ui import start_bot_ui_thread
 
 logging.basicConfig(
@@ -680,6 +680,13 @@ def run_scanner_loop(
         cfg = get_runtime_config()
         if cfg.get("scanner_paused", False):
             logger.info("⏸️ Сканер временно приостановлен пользователем через Telegram UI...")
+            time.sleep(scan_interval_sec)
+            continue
+
+        is_night, night_hours_str = is_night_mode_active(cfg)
+        if is_night:
+            now_msk_str = get_msk_time().strftime("%H:%M")
+            logger.info(f"🌙 [Ночной режим {night_hours_str}] Текущее время {now_msk_str} МСК. Поиск новых импульсов приостановлен (сопровождение открытых сделок активно)...")
             time.sleep(scan_interval_sec)
             continue
 

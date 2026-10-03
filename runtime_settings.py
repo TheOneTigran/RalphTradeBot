@@ -126,6 +126,9 @@ def get_runtime_config(db_path: Path | str = ANALYTICS_DB_PATH) -> Dict[str, Any
     default_leverage = int(get_raw_setting("default_leverage", int(DEFAULT_LEVERAGE), db_path=db_path))
     min_score = int(get_raw_setting("min_score", int(TELEGRAM_MIN_SCORE), db_path=db_path))
     scanner_paused = bool(get_raw_setting("scanner_paused", False, db_path=db_path))
+    night_mode_enabled = bool(get_raw_setting("night_mode_enabled", True, db_path=db_path))
+    night_mode_start = int(get_raw_setting("night_mode_start", 23, db_path=db_path))
+    night_mode_end = int(get_raw_setting("night_mode_end", 9, db_path=db_path))
 
     cfg = {
         "active_symbols": active_symbols,
@@ -136,6 +139,9 @@ def get_runtime_config(db_path: Path | str = ANALYTICS_DB_PATH) -> Dict[str, Any
         "default_leverage": default_leverage,
         "min_score": min_score,
         "scanner_paused": scanner_paused,
+        "night_mode_enabled": night_mode_enabled,
+        "night_mode_start": night_mode_start,
+        "night_mode_end": night_mode_end,
     }
 
     with _settings_lock:
@@ -307,3 +313,75 @@ def toggle_scanner_pause(db_path: Path | str = ANALYTICS_DB_PATH) -> bool:
     new_state = not cfg.get("scanner_paused", False)
     set_raw_setting("scanner_paused", new_state, db_path=db_path)
     return new_state
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Управление ночным режимом (Night Mode)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def get_msk_time() -> datetime:
+    """Возвращает текущее время в часовом поясе Москвы (UTC+3)."""
+    from datetime import timedelta
+    return datetime.now(timezone.utc) + timedelta(hours=3)
+
+
+def is_night_mode_active(cfg: Optional[Dict[str, Any]] = None, db_path: Path | str = ANALYTICS_DB_PATH) -> Tuple[bool, str]:
+    """
+    Проверяет, действует ли сейчас ночной режим (по времени МСК).
+    Возвращает (активен_ли_режим, строка_с_часами).
+    """
+    if cfg is None:
+        cfg = get_runtime_config(db_path=db_path)
+
+    if not cfg.get("night_mode_enabled", True):
+        return False, "Выключен"
+
+    start_h = int(cfg.get("night_mode_start", 23))
+    end_h = int(cfg.get("night_mode_end", 9))
+
+    now_msk = get_msk_time()
+    cur_h = now_msk.hour
+
+    if start_h > end_h:
+        # Переход через полночь, например 23:00 -> 09:00
+        is_night = (cur_h >= start_h or cur_h < end_h)
+    elif start_h < end_h:
+        # Без перехода через полночь, например 01:00 -> 07:00
+        is_night = (start_h <= cur_h < end_h)
+    else:
+        is_night = False
+
+    hours_str = f"{start_h:02d}:00–{end_h:02d}:00 МСК"
+    return is_night, hours_str
+
+
+def set_night_mode_hours(start_hour: int, end_hour: int, db_path: Path | str = ANALYTICS_DB_PATH) -> Tuple[int, int]:
+    """Устанавливает часы начала и окончания ночного режима (0-23 МСК)."""
+    start_h = max(0, min(23, int(start_hour)))
+    end_h = max(0, min(23, int(end_hour)))
+    set_raw_setting("night_mode_start", start_h, db_path=db_path)
+    set_raw_setting("night_mode_end", end_h, db_path=db_path)
+    logger.info(f"Установлены часы ночного режима: {start_h:02d}:00 - {end_h:02d}:00 МСК")
+    return start_h, end_h
+
+
+def toggle_night_mode(db_path: Path | str = ANALYTICS_DB_PATH) -> bool:
+    """Включает или выключает ночной режим."""
+    cfg = get_runtime_config(db_path=db_path)
+    new_state = not cfg.get("night_mode_enabled", True)
+    set_raw_setting("night_mode_enabled", new_state, db_path=db_path)
+    logger.info(f"Ночной режим: {'ВКЛ' if new_state else 'ВЫКЛ'}")
+    return new_state
+
+
+def adjust_night_mode_hour(which: str, delta: int, db_path: Path | str = ANALYTICS_DB_PATH) -> Tuple[int, int]:
+    """Смещает час начала ('start') или конца ('end') на delta (-1 или +1)."""
+    cfg = get_runtime_config(db_path=db_path)
+    start_h = int(cfg.get("night_mode_start", 23))
+    end_h = int(cfg.get("night_mode_end", 9))
+    if which == "start":
+        start_h = (start_h + delta) % 24
+    elif which == "end":
+        end_h = (end_h + delta) % 24
+    set_night_mode_hours(start_h, end_h, db_path=db_path)
+    return start_h, end_h

@@ -72,6 +72,7 @@ def _migrate_schema(conn: sqlite3.Connection):
             ("fail_fast_hit_at", "TEXT"),
             ("notified_tp1", "INTEGER DEFAULT 0"),
             ("notified_tp2", "INTEGER DEFAULT 0"),
+            ("notified_tp3", "INTEGER DEFAULT 0"),
             ("notified_closed", "INTEGER DEFAULT 0"),
             ("notified_fail_fast", "INTEGER DEFAULT 0"),
         ]
@@ -825,8 +826,8 @@ def get_detailed_statistics(period: str = "all", db_path: Path | str = ANALYTICS
                 COUNT(s.id) AS total_sig,
                 SUM(CASE WHEN o.status = 'active' THEN 1 ELSE 0 END) AS active_cnt,
                 SUM(CASE WHEN o.status != 'active' AND o.status IS NOT NULL THEN 1 ELSE 0 END) AS closed_cnt,
-                SUM(CASE WHEN o.status IN ('closed_tp', 'closed_be') THEN 1 ELSE 0 END) AS wins_cnt,
-                SUM(CASE WHEN o.status = 'closed_tp' THEN 1 ELSE 0 END) AS full_tp_cnt,
+                SUM(CASE WHEN o.status IN ('closed_tp', 'closed_tp3', 'closed_be') THEN 1 ELSE 0 END) AS wins_cnt,
+                SUM(CASE WHEN o.status IN ('closed_tp', 'closed_tp3') THEN 1 ELSE 0 END) AS full_tp_cnt,
                 SUM(CASE WHEN o.status IN ('closed_sl', 'closed_fail_fast') THEN 1 ELSE 0 END) AS losses_cnt,
                 SUM(CASE WHEN o.status = 'closed_be' THEN 1 ELSE 0 END) AS be_cnt,
                 SUM(CASE WHEN o.tp1_hit = 1 THEN 1 ELSE 0 END) AS tp1_cnt,

@@ -39,6 +39,12 @@ from runtime_settings import (
     set_risk_pct,
     set_leverage,
     set_min_score,
+    set_raw_setting,
+    toggle_night_mode,
+    set_night_mode_hours,
+    adjust_night_mode_hour,
+    is_night_mode_active,
+    get_msk_time,
 )
 from analytics_db import (
     get_detailed_statistics,
@@ -157,8 +163,15 @@ class TelegramUIController:
         cfg = get_runtime_config()
         active_trades = get_active_trades_detailed()
         stats = get_detailed_statistics("all")
+        is_night, night_hours = is_night_mode_active(cfg)
 
-        status_icon = "⏸ <b>ПАУЗА</b>" if cfg.get("scanner_paused") else "🟢 <b>АКТИВЕН (24/7)</b>"
+        if cfg.get("scanner_paused"):
+            status_icon = "⏸ <b>ПАУЗА</b>"
+        elif is_night:
+            status_icon = f"🌙 <b>НОЧНОЙ РЕЖИМ ({night_hours})</b>"
+        else:
+            status_icon = "🟢 <b>АКТИВЕН (24/7)</b>"
+
         pnl_sign = "+" if stats["net_pnl_usd"] >= 0 else ""
         pnl_emoji = "🟢" if stats["net_pnl_usd"] >= 0 else "🔴"
 
@@ -177,6 +190,8 @@ class TelegramUIController:
             f"<i>Выберите нужный раздел в меню ниже:</i>"
         )
 
+        night_label = f"🌙 Ночь ({cfg.get('night_mode_start', 23)}-{cfg.get('night_mode_end', 9)})" if cfg.get("night_mode_enabled", True) else "☀️ Ночь: ВЫКЛ"
+
         keyboard = {
             "inline_keyboard": [
                 [
@@ -189,6 +204,9 @@ class TelegramUIController:
                 ],
                 [
                     {"text": "⚙️ Депозит & Риск", "callback_data": "screen:settings"},
+                    {"text": night_label, "callback_data": "screen:night"},
+                ],
+                [
                     {"text": "🔄 Обновить", "callback_data": "screen:main"},
                 ],
             ]
@@ -354,6 +372,7 @@ class TelegramUIController:
 
                 tp1_st = "✅ ВЗЯТ" if t["tp1_hit"] else f"⏳ {_fmt_price(t['tp1_price'])}"
                 tp2_st = "✅ ВЗЯТ" if t["tp2_hit"] else f"⏳ {_fmt_price(t['tp2_price'])}"
+                tp3_st = "✅ ВЗЯТ" if t.get("tp3_hit") else f"⏳ {_fmt_price(t['tp3_price'])}"
                 be_st = "🛡 В БЕЗУБЫТКЕ" if t["be_triggered"] else f"{_fmt_price(t['sl_price'])}"
 
                 text += (
@@ -363,6 +382,7 @@ class TelegramUIController:
                     f"├ Объём: ${t['pos_size_usd']:,.1f} │ Риск: ${t['risk_usd']:.1f}\n"
                     f"├ TP1 (40%): {tp1_st}\n"
                     f"├ TP2 (30%): {tp2_st}\n"
+                    f"├ TP3 (30%): {tp3_st}\n"
                     f"└ Стоп: <b>{be_st}</b>\n\n"
                 )
 
@@ -521,6 +541,62 @@ class TelegramUIController:
         ]
         return text, {"inline_keyboard": buttons}
 
+    def render_night_mode_screen(self) -> Tuple[str, Dict[str, Any]]:
+        cfg = get_runtime_config()
+        enabled = cfg.get("night_mode_enabled", True)
+        start_h = int(cfg.get("night_mode_start", 23))
+        end_h = int(cfg.get("night_mode_end", 9))
+        is_night, hours_str = is_night_mode_active(cfg)
+        now_msk = get_msk_time().strftime("%H:%M")
+
+        status_text = "🟢 <b>ВКЛЮЧЕН</b>" if enabled else "⚪ <b>ВЫКЛЮЧЕН (24/7)</b>"
+        state_note = "🌙 <i>Сейчас действует ночной режим!</i>" if is_night else "☀️ <i>Сейчас дневной режим (сканер активен).</i>"
+
+        text = (
+            f"🌙 <b>НАСТРОЙКИ НОЧНОГО РЕЖИМА (ТИХИЕ ЧАСЫ)</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Статус: {status_text}\n"
+            f"Временной интервал: <b>{start_h:02d}:00 — {end_h:02d}:00 МСК</b>\n"
+            f"Текущее время на сервере: <b>{now_msk} МСК</b>\n"
+            f"{state_note}\n\n"
+            f"ℹ️ <b>Как работает ночной режим:</b>\n"
+            f"• В тихие часы бот <b>не сканирует новые пары</b> и <b>не тратит токенов ИИ Vision</b>.\n"
+            f"• <b>Все открытые ранее сделки продолжают сопровождаться 24/7</b> (тейки, стопы и безубытки приходят штатно!).\n\n"
+            f"<i>Управляйте кнопками ниже или отправьте команду:</i>\n"
+            f"• <code>/night 23 9</code> — задать точные часы (начало и конец)\n"
+            f"• <code>/night on</code> или <code>/night off</code>"
+        )
+
+        toggle_btn_text = "🟢 Выключить ночной режим" if enabled else "⚪ Включить ночной режим"
+
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": toggle_btn_text, "callback_data": "night:toggle"},
+                ],
+                [
+                    {"text": "🌙 23:00–09:00", "callback_data": "night:preset:23:9"},
+                    {"text": "🌙 00:00–08:00", "callback_data": "night:preset:0:8"},
+                    {"text": "🌙 22:00–10:00", "callback_data": "night:preset:22:10"},
+                ],
+                [
+                    {"text": "◀ Начало -1ч", "callback_data": "night:adj:start:-1"},
+                    {"text": f"Начало: {start_h:02d}:00", "callback_data": "night:noop"},
+                    {"text": "Начало +1ч ▶", "callback_data": "night:adj:start:1"},
+                ],
+                [
+                    {"text": "◀ Конец -1ч", "callback_data": "night:adj:end:-1"},
+                    {"text": f"Конец: {end_h:02d}:00", "callback_data": "night:noop"},
+                    {"text": "Конец +1ч ▶", "callback_data": "night:adj:end:1"},
+                ],
+                [
+                    {"text": "🔄 Обновить", "callback_data": "screen:night"},
+                    {"text": "🔙 В главное меню", "callback_data": "screen:main"},
+                ],
+            ]
+        }
+        return text, keyboard
+
     # ═══════════════════════════════════════════════════════════════════════════
     # Обработчик Callback Query
     # ═══════════════════════════════════════════════════════════════════════════
@@ -626,6 +702,35 @@ class TelegramUIController:
             text, kb = self.render_settings_screen()
             self.edit_message(chat_id, msg_id, text, kb)
 
+        elif data == "screen:night":
+            text, kb = self.render_night_mode_screen()
+            self.edit_message(chat_id, msg_id, text, kb)
+
+        elif data == "night:toggle":
+            st = toggle_night_mode()
+            toast_msg = "🟢 Ночной режим ВКЛЮЧЕН" if st else "⚪ Ночной режим ВЫКЛЮЧЕН"
+            text, kb = self.render_night_mode_screen()
+            self.edit_message(chat_id, msg_id, text, kb)
+
+        elif data.startswith("night:preset:"):
+            parts = data.split(":")
+            s_h, e_h = int(parts[2]), int(parts[3])
+            set_night_mode_hours(s_h, e_h)
+            toast_msg = f"🌙 Установлены часы: {s_h:02d}:00–{e_h:02d}:00 МСК"
+            text, kb = self.render_night_mode_screen()
+            self.edit_message(chat_id, msg_id, text, kb)
+
+        elif data.startswith("night:adj:"):
+            parts = data.split(":")
+            which, delta = parts[2], int(parts[3])
+            s_h, e_h = adjust_night_mode_hour(which, delta)
+            toast_msg = f"Часы обновлены: {s_h:02d}:00–{e_h:02d}:00 МСК"
+            text, kb = self.render_night_mode_screen()
+            self.edit_message(chat_id, msg_id, text, kb)
+
+        elif data == "night:noop":
+            toast_msg = "Используйте кнопки ◀ или ▶ для смены часа"
+
         self.answer_callback(cb_id, text=toast_msg)
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -652,6 +757,22 @@ class TelegramUIController:
         elif cmd in ("/trades", "/positions", "сделки"):
             msg_text, kb = self.render_active_trades_screen()
             self.send_message(chat_id, msg_text, kb)
+
+        elif cmd in ("/night", "/quiet", "ночь"):
+            parts = text.split()
+            if len(parts) >= 3 and parts[1].isdigit() and parts[2].isdigit():
+                s_h, e_h = int(parts[1]), int(parts[2])
+                set_night_mode_hours(s_h, e_h)
+                self.send_message(chat_id, f"✅ Ночной режим установлен: <b>{s_h:02d}:00 — {e_h:02d}:00 МСК</b>")
+            elif len(parts) == 2 and parts[1].lower() in ("on", "1", "вкл"):
+                set_raw_setting("night_mode_enabled", True)
+                self.send_message(chat_id, "🟢 Ночной режим <b>ВКЛЮЧЕН</b>")
+            elif len(parts) == 2 and parts[1].lower() in ("off", "0", "выкл"):
+                set_raw_setting("night_mode_enabled", False)
+                self.send_message(chat_id, "⚪ Ночной режим <b>ВЫКЛЮЧЕН</b> (сканер работает 24/7)")
+            else:
+                msg_text, kb = self.render_night_mode_screen()
+                self.send_message(chat_id, msg_text, kb)
 
         elif cmd in ("/coins", "/symbols", "монеты"):
             msg_text, kb = self.render_coins_screen()

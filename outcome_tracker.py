@@ -214,10 +214,17 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
                 elif high_p >= tp2:
                     tp2_bar_idx = bar_counter
 
-            # TP3
-            if high_p >= tp3 and not tp3_hit:
+            # TP3 (30% Runner) -> Финальная цель! Закрываем позицию на 100%
+            if high_p >= tp3:
                 tp3_hit = True
                 tp3_hit_at = c_time_iso
+                status = "closed_tp3"
+                bars_to_close = bar_counter
+                tp1_g = (tp1 - entry) / entry * 100.0
+                tp2_g = (tp2 - entry) / entry * 100.0
+                tp3_g = (tp3 - entry) / entry * 100.0
+                final_pnl = round(0.40 * tp1_g + 0.30 * tp2_g + 0.30 * tp3_g, 2)
+                break
 
             # Fail-Fast Time-Stop (динамический порог по ТФ)
             if bar_counter >= effective_ff_bars and not tp1_hit and not tp2_hit and not fail_fast_triggered:
@@ -240,7 +247,9 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
                     be_hit_at = c_time_iso
                     status = "closed_be"
                     bars_to_close = bar_counter
-                    final_pnl = BREAKEVEN_OFFSET_PCT
+                    tp1_g = (tp1 - entry) / entry * 100.0
+                    tp2_g = (tp2 - entry) / entry * 100.0
+                    final_pnl = round(0.40 * tp1_g + 0.30 * tp2_g + 0.30 * BREAKEVEN_OFFSET_PCT, 2)
                     break
             else:
                 if low_p <= sl:
@@ -277,10 +286,17 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
                 elif low_p <= tp2:
                     tp2_bar_idx = bar_counter
 
-            # TP3
-            if low_p <= tp3 and not tp3_hit:
+            # TP3 (30% Runner) -> Финальная цель! Закрываем позицию на 100%
+            if low_p <= tp3:
                 tp3_hit = True
                 tp3_hit_at = c_time_iso
+                status = "closed_tp3"
+                bars_to_close = bar_counter
+                tp1_g = (entry - tp1) / entry * 100.0
+                tp2_g = (entry - tp2) / entry * 100.0
+                tp3_g = (entry - tp3) / entry * 100.0
+                final_pnl = round(0.40 * tp1_g + 0.30 * tp2_g + 0.30 * tp3_g, 2)
+                break
 
             # Fail-Fast Time-Stop (динамический порог по ТФ)
             if bar_counter >= effective_ff_bars and not tp1_hit and not tp2_hit and not fail_fast_triggered:
@@ -302,7 +318,9 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
                     be_hit_at = c_time_iso
                     status = "closed_be"
                     bars_to_close = bar_counter
-                    final_pnl = BREAKEVEN_OFFSET_PCT
+                    tp1_g = (entry - tp1) / entry * 100.0
+                    tp2_g = (entry - tp2) / entry * 100.0
+                    final_pnl = round(0.40 * tp1_g + 0.30 * tp2_g + 0.30 * BREAKEVEN_OFFSET_PCT, 2)
                     break
             else:
                 if high_p >= sl:
@@ -388,15 +406,19 @@ def track_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> int:
         # Доли Model E: 40% TP1, 30% TP2, 30% Runner
         tp1_share = TP_SHARES[0] if len(TP_SHARES) > 0 else 0.40
         tp2_share = TP_SHARES[1] if len(TP_SHARES) > 1 else 0.30
+        tp3_share = TP_SHARES[2] if len(TP_SHARES) > 2 else 0.30
 
         tp1_gain_pct = abs(entry - tp1) / entry * 100.0
         tp2_gain_pct = abs(entry - tp2) / entry * 100.0
+        tp3_gain_pct = abs(entry - tp3) / entry * 100.0
 
         # Чистый PnL с вычетом комиссий roundtrip (0.2%)
         fee_roundtrip = COMMISSION_RATE * 2.0
         tp1_net_usd = (pos_size_usd * tp1_share * (tp1_gain_pct / 100.0)) - (pos_size_usd * tp1_share * fee_roundtrip)
         tp2_net_usd = (pos_size_usd * tp2_share * (tp2_gain_pct / 100.0)) - (pos_size_usd * tp2_share * fee_roundtrip)
+        tp3_net_usd = (pos_size_usd * tp3_share * (tp3_gain_pct / 100.0)) - (pos_size_usd * tp3_share * fee_roundtrip)
         cum_tp_profit_usd = tp1_net_usd + tp2_net_usd
+        full_tp_profit_usd = tp1_net_usd + tp2_net_usd + tp3_net_usd
 
         # ── 1. Уведомление: Сработал TP1 ───────────────────────────────────────
         if updates.get("tp1_hit") and not sig.get("notified_tp1"):
@@ -423,6 +445,26 @@ def track_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> int:
                 )
                 send_trade_update_reply(reply_to_message_id=tg_msg_id, text=tp2_text)
                 logger.info(f"📤 Отправлено уведомление TP2 + Безубыток для #{sig_id} {sym}")
+
+        # ── 2.5. Уведомление: Сработал TP3 (Финальная цель / 100% закрыто) ───
+        if (updates.get("tp3_hit") or new_status == "closed_tp3") and not sig.get("notified_tp3"):
+            updates["notified_tp3"] = 1
+            updates["notified_closed"] = 1
+            updates["net_pnl_usd"] = round(full_tp_profit_usd, 2)
+            full_r = full_tp_profit_usd / risk_usd if risk_usd > 0 else 0.0
+            if tg_msg_id:
+                tp3_text = (
+                    f"🏆 <b>TP3 (ФИНАЛЬНАЯ ЦЕЛЬ 50% ФИБО) ВЗЯТ по цене {_fmt_pc(tp3)} (+{tp3_gain_pct:.2f}%)!</b>\n\n"
+                    f"✅ Зафиксирован весь остаток (<b>{int(tp3_share*100)}% позиции</b>): <b>+${tp3_net_usd:.2f}</b> чистыми.\n"
+                    f"🎉 <b>СДЕЛКА ПОЛНОСТЬЮ ЗАКРЫТА С МАКСИМАЛЬНЫМ ПРОФИТОМ:</b>\n"
+                    f"├ TP1 (40%): +${tp1_net_usd:.2f}\n"
+                    f"├ TP2 (30%): +${tp2_net_usd:.2f}\n"
+                    f"├ TP3 (30%): +${tp3_net_usd:.2f}\n"
+                    f"└ 💰 <b>Итоговый чистый PnL: +${full_tp_profit_usd:.2f} (+{full_r:+.2f}R с учётом комиссий)</b>\n\n"
+                    f"🏁 <i>Все 3 цели по волновой теории Эллиотта филигранно взяты!</i>"
+                )
+                send_trade_update_reply(reply_to_message_id=tg_msg_id, text=tp3_text)
+                logger.info(f"📤 Отправлено уведомление TP3 (Full Win) для #{sig_id} {sym} (Net: +${full_tp_profit_usd:.2f})")
 
         # ── 3. Уведомление: Fail-Fast Time-Stop на баре 3 (45 мин / 3 часа) ──
         if updates.get("fail_fast_triggered") and not sig.get("notified_fail_fast"):
@@ -481,13 +523,17 @@ def track_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> int:
         # ── 5. Уведомление: Сработал Безубыток (после взятия TP2) ──────────────
         if new_status == "closed_be" and not sig.get("notified_closed"):
             updates["notified_closed"] = 1
-            updates["net_pnl_usd"] = round(cum_tp_profit_usd, 2)
+            be_gain_pct = BREAKEVEN_OFFSET_PCT
+            be_net_usd = (pos_size_usd * tp3_share * (be_gain_pct / 100.0)) - (pos_size_usd * tp3_share * fee_roundtrip)
+            total_be_net_usd = cum_tp_profit_usd + be_net_usd
+            updates["net_pnl_usd"] = round(total_be_net_usd, 2)
+            be_r = total_be_net_usd / risk_usd if risk_usd > 0 else 0.0
             if tg_msg_id:
                 be_p_c = _fmt_pc(entry * (1.001 if direction == "LONG" else 0.999))
                 be_text = (
                     f"🛡️ <b>БЕЗУБЫТОК СРАБОТАЛ по цене {be_p_c}!</b>\n\n"
-                    f"✅ Оставшаяся часть позиции закрыта в точке безубытка (+0.1%).\n"
-                    f"💰 Итоговая чистая прибыль по сделке: <b>+${cum_tp_profit_usd:.2f}</b> (с учётом зафиксированных TP1 и TP2).\n"
+                    f"✅ Оставшаяся часть позиции (30%) закрыта в точке безубытка (+0.1%).\n"
+                    f"💰 Итоговая чистая прибыль по сделке: <b>+${total_be_net_usd:.2f} (+{be_r:+.2f}R)</b> (с учётом зафиксированных TP1 и TP2).\n"
                     f"Сделка успешно завершена в плюс!"
                 )
                 send_trade_update_reply(reply_to_message_id=tg_msg_id, text=be_text)
