@@ -119,7 +119,7 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
     # Определяем динамический порог Fail-Fast в зависимости от ТФ
     # 5m=6 баров (30 мин), 15m=3 бара (45 мин), 1h=3 бара (3ч), 4h=2 бара (8ч)
     ff_bars_map = {"5m": 6, "15m": 3, "1h": 3, "4h": 2, "1d": 2}
-    effective_ff_bars = ff_bars_map.get(interval, FAIL_FAST_BARS)
+    effective_ff_bars = ff_bars_map.get(interval, 3)
 
     # Определяем стартовую точку для отсчёта баров:
     # Используем detection_ts (когда сигнал был реально отправлен пользователю)
@@ -353,141 +353,81 @@ def track_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> int:
         new_status = updates.get("status", "active")
         prev_status = sig.get("status", "active")
 
-        # Доли Model E: 40% TP1, 30% TP2, 30% Runner
-        tp1_share = TP_SHARES[0] if len(TP_SHARES) > 0 else 0.40
-        tp2_share = TP_SHARES[1] if len(TP_SHARES) > 1 else 0.30
-        tp3_share = TP_SHARES[2] if len(TP_SHARES) > 2 else 0.30
+        # Доли Model 2: 30% TP1 (+1.5R Net), 70% TP2 (+3.0R Net)
+        tp1_share = TP_SHARES[0] if len(TP_SHARES) > 0 else 0.30
+        tp2_share = TP_SHARES[1] if len(TP_SHARES) > 1 else 0.70
 
         tp1_gain_pct = abs(entry - tp1) / entry * 100.0
         tp2_gain_pct = abs(entry - tp2) / entry * 100.0
-        tp3_gain_pct = abs(entry - tp3) / entry * 100.0
 
-        # Чистый PnL с вычетом комиссий roundtrip (0.2%)
+        # Чистый PnL с вычетом комиссий roundtrip (0.10%)
         fee_roundtrip = COMMISSION_RATE * 2.0
         tp1_net_usd = (pos_size_usd * tp1_share * (tp1_gain_pct / 100.0)) - (pos_size_usd * tp1_share * fee_roundtrip)
         tp2_net_usd = (pos_size_usd * tp2_share * (tp2_gain_pct / 100.0)) - (pos_size_usd * tp2_share * fee_roundtrip)
-        tp3_net_usd = (pos_size_usd * tp3_share * (tp3_gain_pct / 100.0)) - (pos_size_usd * tp3_share * fee_roundtrip)
-        cum_tp_profit_usd = tp1_net_usd + tp2_net_usd
-        full_tp_profit_usd = tp1_net_usd + tp2_net_usd + tp3_net_usd
+        full_tp_profit_usd = tp1_net_usd + tp2_net_usd
 
-        # ── 1. Уведомление: Сработал TP1 ───────────────────────────────────────
+        # ── 1. Уведомление: Сработал TP1 (+1.5R Net) -> Перенос остатка 70% в БУ ────
         if updates.get("tp1_hit") and not sig.get("notified_tp1"):
             updates["notified_tp1"] = 1
             if tg_msg_id:
+                be_price_c = _fmt_pc(entry)
                 tp1_text = (
                     f"🎯 <b>TP1 ВЗЯТ по цене {_fmt_pc(tp1)} (+{tp1_gain_pct:.2f}%)!</b>\n\n"
-                    f"✅ Зафиксировано <b>{int(tp1_share*100)}% позиции</b>: <b>+${tp1_net_usd:.2f}</b> чистыми (с вычетом комиссий).\n"
-                    f"👉 <b>ДЕЙСТВИЕ:</b> Держи лимитный ордер на TP2 ({_fmt_pc(tp2)})."
+                    f"✅ Зафиксировано <b>30% позиции (+1.5R Net)</b>: <b>+${tp1_net_usd:.2f}</b> чистыми (с вычетом комиссий).\n"
+                    f"🛡️ <b>СРОЧНОЕ ДЕЙСТВИЕ:</b> Перенесите Stop Loss оставшихся 70% в <b>БЕЗУБЫТОК</b> на цену входа {be_price_c}.\n\n"
+                    f"👉 Держите лимитный ордер на финальный TP2: {_fmt_pc(tp2)} (+3.0R Net)."
                 )
                 send_trade_update_reply(reply_to_message_id=tg_msg_id, text=tp1_text)
                 logger.info(f"📤 Отправлено уведомление TP1 для #{sig_id} {sym}")
 
-        # ── 2. Уведомление: Сработал TP2 (перенос в БУ) ────────────────────────
-        if updates.get("tp2_hit") and not sig.get("notified_tp2"):
+        # ── 2. Уведомление: Сработал TP2 (+3.0R Net / 100% сделки закрыто) ───────
+        if (updates.get("tp2_hit") or new_status == "closed_tp2") and not sig.get("notified_tp2"):
             updates["notified_tp2"] = 1
-            if tg_msg_id:
-                be_price_c = _fmt_pc(entry * (1.001 if direction == "LONG" else 0.999))
-                tp2_text = (
-                    f"🎯 <b>TP2 ВЗЯТ по цене {_fmt_pc(tp2)} (+{tp2_gain_pct:.2f}%)!</b>\n\n"
-                    f"✅ Зафиксировано ещё <b>{int(tp2_share*100)}% позиции</b> (суммарно взято <b>+${cum_tp_profit_usd:.2f}</b> чистыми).\n"
-                    f"👉 <b>СРОЧНОЕ ДЕЙСТВИЕ:</b> Перенеси Stop Loss в <b>БЕЗУБЫТОК</b> на цену {be_price_c}\n\n"
-                    f"🏃 Остаток 30% сопровождаем по трейлингу или ждём цель TP3 ({_fmt_pc(tp3)})."
-                )
-                send_trade_update_reply(reply_to_message_id=tg_msg_id, text=tp2_text)
-                logger.info(f"📤 Отправлено уведомление TP2 + Безубыток для #{sig_id} {sym}")
-
-        # ── 2.5. Уведомление: Сработал TP3 (Финальная цель / 100% закрыто) ───
-        if (updates.get("tp3_hit") or new_status == "closed_tp3") and not sig.get("notified_tp3"):
-            updates["notified_tp3"] = 1
             updates["notified_closed"] = 1
             updates["net_pnl_usd"] = round(full_tp_profit_usd, 2)
             full_r = full_tp_profit_usd / risk_usd if risk_usd > 0 else 0.0
             if tg_msg_id:
-                tp3_text = (
-                    f"🏆 <b>TP3 (ФИНАЛЬНАЯ ЦЕЛЬ 50% ФИБО) ВЗЯТ по цене {_fmt_pc(tp3)} (+{tp3_gain_pct:.2f}%)!</b>\n\n"
-                    f"✅ Зафиксирован весь остаток (<b>{int(tp3_share*100)}% позиции</b>): <b>+${tp3_net_usd:.2f}</b> чистыми.\n"
+                tp2_text = (
+                    f"🏆 <b>TP2 (ФИНАЛЬНАЯ ЦЕЛЬ +3.0R Net) ВЗЯТ по цене {_fmt_pc(tp2)} (+{tp2_gain_pct:.2f}%)!</b>\n\n"
+                    f"✅ Зафиксированы оставшиеся <b>70% позиции</b>: <b>+${tp2_net_usd:.2f}</b> чистыми.\n"
                     f"🎉 <b>СДЕЛКА ПОЛНОСТЬЮ ЗАКРЫТА С МАКСИМАЛЬНЫМ ПРОФИТОМ:</b>\n"
-                    f"├ TP1 (40%): +${tp1_net_usd:.2f}\n"
-                    f"├ TP2 (30%): +${tp2_net_usd:.2f}\n"
-                    f"├ TP3 (30%): +${tp3_net_usd:.2f}\n"
+                    f"├ TP1 (30%): +${tp1_net_usd:.2f} (+1.5R Net)\n"
+                    f"├ TP2 (70%): +${tp2_net_usd:.2f} (+3.0R Net)\n"
                     f"└ 💰 <b>Итоговый чистый PnL: +${full_tp_profit_usd:.2f} (+{full_r:+.2f}R с учётом комиссий)</b>\n\n"
-                    f"🏁 <i>Все 3 цели по волновой теории Эллиотта филигранно взяты!</i>"
+                    f"🏁 <i>Обе цели по Стратегии Sweep & Engulfing филигранно взяты!</i>"
                 )
-                send_trade_update_reply(reply_to_message_id=tg_msg_id, text=tp3_text)
-                logger.info(f"📤 Отправлено уведомление TP3 (Full Win) для #{sig_id} {sym} (Net: +${full_tp_profit_usd:.2f})")
+                send_trade_update_reply(reply_to_message_id=tg_msg_id, text=tp2_text)
+                logger.info(f"📤 Отправлено уведомление TP2 (Full Win) для #{sig_id} {sym} (Net: +${full_tp_profit_usd:.2f})")
 
-        # ── 3. Уведомление: Fail-Fast Time-Stop на баре 3 (45 мин / 3 часа) ──
-        if updates.get("fail_fast_triggered") and not sig.get("notified_fail_fast"):
-            updates["notified_fail_fast"] = 1
+        # ── 3. Уведомление: Сработал Безубыток (после взятия TP1) ───────────────
+        if new_status == "closed_be" and not sig.get("notified_closed"):
             updates["notified_closed"] = 1
-            cur_pnl_pct = updates.get("final_pnl_pct", 0.0)
-            ff_net_usd = (pos_size_usd * (cur_pnl_pct / 100.0)) - (pos_size_usd * fee_roundtrip)
-            updates["net_pnl_usd"] = round(ff_net_usd, 2)
-            time_name_map = {"5m": "30 минут (6 свечей 5m)", "15m": "45 минут (3 свечи 15m)", "1h": "3 часа (3 свечи 1h)", "4h": "8 часов (2 свечи 4h)"}
-            time_name = time_name_map.get(tf, f"{tf} свечи")
-
+            total_be_net_usd = tp1_net_usd
+            updates["net_pnl_usd"] = round(total_be_net_usd, 2)
+            be_r = total_be_net_usd / risk_usd if risk_usd > 0 else 0.0
             if tg_msg_id:
-                ff_text = (
-                    f"⏱ <b>ВРЕМЕННОЙ СТОП (FAIL-FAST — {time_name}):</b>\n\n"
-                    f"⚠️ Прошло 3 свечи ({time_name}). Импульс угас, цена топчется на месте (прибыль менее +0.4R).\n"
-                    f"👉 <b>ДЕЙСТВИЕ:</b> Закрой остаток позиции <b>по рынку (Market Close)</b>!\n\n"
-                    f"📊 Текущий PnL с вычетом комиссий: <b>{ff_net_usd:+.2f}$</b> ({cur_pnl_pct:+.2f}%).\n"
-                    f"🛡️ <i>Правило Fail-Fast отсекает 80% затяжных стопов.</i>"
+                be_p_c = _fmt_pc(entry)
+                be_text = (
+                    f"🛡️ <b>БЕЗУБЫТОК СРАБОТАЛ по цене {be_p_c}!</b>\n\n"
+                    f"✅ Оставшиеся 70% позиции закрыты в точке безубытка.\n"
+                    f"💰 Итоговая чистая прибыль по сделке: <b>+${total_be_net_usd:.2f} (+{be_r:+.2f}R)</b> (благодаря фиксации 30% на TP1).\n"
+                    f"Сделка защищена от разворота рынка и завершена в плюс!"
                 )
-                send_trade_update_reply(reply_to_message_id=tg_msg_id, text=ff_text)
-                logger.info(f"📤 Отправлено уведомление Fail-Fast для #{sig_id} {sym}")
+                send_trade_update_reply(reply_to_message_id=tg_msg_id, text=be_text)
+                logger.info(f"📤 Отправлено уведомление Безубыток для #{sig_id} {sym}")
 
         # ── 4. Уведомление: Сработал Стоп-Лосс ────────────────────────────────
         if new_status == "closed_sl" and not sig.get("notified_closed"):
             updates["notified_closed"] = 1
-            has_tp1 = bool(updates.get("tp1_hit") or sig.get("tp1_hit"))
-            if has_tp1:
-                # 40% позиции уже зафиксировано на TP1 в плюс!
-                # Стоп-лосс сработал только по оставшимся 60% позиции
-                rem_share = 1.0 - tp1_share
-                rem_sl_usd = rem_share * risk_usd
-                net_pnl_usd = round(tp1_net_usd - rem_sl_usd, 2)
-                net_r = net_pnl_usd / risk_usd if risk_usd > 0 else 0.0
-                updates["net_pnl_usd"] = net_pnl_usd
-
-                sign_str = "+" if net_pnl_usd > 0 else ""
-                icon = "🟡" if net_pnl_usd >= 0 else "❌"
-                sl_text = (
-                    f"🛑 <b>СТОП-ЛОСС СРАБОТАЛ по цене {_fmt_pc(sl)}!</b>\n\n"
-                    f"ℹ️ Ранее на TP1 было зафиксировано <b>{int(tp1_share*100)}%</b>: <b>+${tp1_net_usd:.2f}</b> чистыми.\n"
-                    f"Оставшаяся часть позиции (<b>{int(rem_share*100)}%</b>) закрыта по SL (-${rem_sl_usd:.2f}).\n\n"
-                    f"{icon} <b>Итоговый чистый PnL по сделке: {sign_str}${net_pnl_usd:.2f} ({net_r:+.2f}R с учётом комиссий).</b>\n"
-                    f"Позиция полностью закрыта."
-                )
-            else:
-                updates["net_pnl_usd"] = -risk_usd
-                sl_text = (
-                    f"🛑 <b>СТОП-ЛОСС СРАБОТАЛ по цене {_fmt_pc(sl)}!</b>\n\n"
-                    f"❌ Убыток по сделке: <b>-${risk_usd:.2f}</b> (-1.0R с учётом комиссий).\n"
-                    f"Позиция полностью закрыта."
-                )
+            updates["net_pnl_usd"] = -risk_usd
+            sl_text = (
+                f"🛑 <b>СТОП-ЛОСС СРАБОТАЛ по цене {_fmt_pc(sl)}!</b>\n\n"
+                f"❌ Убыток по сделке: <b>-${risk_usd:.2f}</b> (-1.0R с учётом комиссий).\n"
+                f"Позиция полностью закрыта."
+            )
             if tg_msg_id:
                 send_trade_update_reply(reply_to_message_id=tg_msg_id, text=sl_text)
                 logger.info(f"📤 Отправлено уведомление SL для #{sig_id} {sym} (Net PnL: ${updates.get('net_pnl_usd')})")
-
-        # ── 5. Уведомление: Сработал Безубыток (после взятия TP2) ──────────────
-        if new_status == "closed_be" and not sig.get("notified_closed"):
-            updates["notified_closed"] = 1
-            be_gain_pct = BREAKEVEN_OFFSET_PCT
-            be_net_usd = (pos_size_usd * tp3_share * (be_gain_pct / 100.0)) - (pos_size_usd * tp3_share * fee_roundtrip)
-            total_be_net_usd = cum_tp_profit_usd + be_net_usd
-            updates["net_pnl_usd"] = round(total_be_net_usd, 2)
-            be_r = total_be_net_usd / risk_usd if risk_usd > 0 else 0.0
-            if tg_msg_id:
-                be_p_c = _fmt_pc(entry * (1.001 if direction == "LONG" else 0.999))
-                be_text = (
-                    f"🛡️ <b>БЕЗУБЫТОК СРАБОТАЛ по цене {be_p_c}!</b>\n\n"
-                    f"✅ Оставшаяся часть позиции (30%) закрыта в точке безубытка (+0.1%).\n"
-                    f"💰 Итоговая чистая прибыль по сделке: <b>+${total_be_net_usd:.2f} (+{be_r:+.2f}R)</b> (с учётом зафиксированных TP1 и TP2).\n"
-                    f"Сделка успешно завершена в плюс!"
-                )
-                send_trade_update_reply(reply_to_message_id=tg_msg_id, text=be_text)
-                logger.info(f"📤 Отправлено уведомление Безубыток для #{sig_id} {sym}")
 
         # Сохраняем обновленные поля в БД
         update_signal_outcome(sig_id, updates, db_path=db_path)

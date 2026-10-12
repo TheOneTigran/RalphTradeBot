@@ -49,6 +49,7 @@ from config import (
     CONFIRMED_DIR, REJECTED_DIR, RESULTS_DIR,
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
     RISK_BUDGET_USD, DEFAULT_LEVERAGE,
+    ENABLE_VISION_FILTER,
 )
 from elliott_detector import detect_elliott_impulse
 from chart_renderer import render_signal_chart, annotate_chart_with_analysis
@@ -666,11 +667,12 @@ def run_scanner_loop(
     Главный цикл сканирования всех инструментов в реальном времени.
     """
     logger.info("=" * 72)
-    logger.info("🚀 Запуск RalphTradeBot Real-Time Scanner v2.2")
+    logger.info("🚀 Запуск RalphTradeBot Real-Time Scanner v2.2 (Model 2: Sweep & Engulfing)")
     logger.info(f"   Активов: {len(symbols)} | Таймфреймов: {len(intervals)} | Всего пар: {len(symbols) * len(intervals)}")
     logger.info(f"   Интервал сканирования: каждые {scan_interval_sec} сек | Поток: {max_workers}")
     logger.info(f"   Минимум для Telegram: Score ≥ {TELEGRAM_MIN_SCORE}% (Textbook)")
-    logger.info(f"   Правило безубытка: вход +{BREAKEVEN_OFFSET_PCT}% после взятия TP2")
+    logger.info("   Торговый план: Limit 50% candle S │ Буфер SL 0.15% │ TP1 30% (+1.5R Net) -> БУ │ TP2 70% (+3.0R Net)")
+    logger.info(f"   Vision AI модуль: {'ВКЛЮЧЕН' if ENABLE_VISION_FILTER else 'ВЫКЛЮЧЕН (чистый алгоритмический скоринг)'}")
     logger.info("=" * 72)
 
     init_db()
