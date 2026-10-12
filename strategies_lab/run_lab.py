@@ -38,6 +38,7 @@ from strategies_lab.strategies.strategy_1_structure_shift.strategy import Market
 from strategies_lab.strategies.strategy_2_absorption_bar.strategy import AbsorptionBarStrategy
 from strategies_lab.strategies.strategy_3_keltner_reentry.strategy import KeltnerReentryStrategy
 from strategies_lab.strategies.strategy_4_chandelier_trailing.strategy import ChandelierTrailingStrategy
+from strategies_lab.strategies.strategy_5_sweep_engulf.strategy import SweepEngulfRetracementStrategy
 from strategies_lab.strategies.exit_models import (
     BaselineExitModel,
     FailFastTimeStopExitModel,
@@ -266,6 +267,7 @@ def main():
             (AbsorptionBarStrategy(), "strategy_2_absorption_bar"),
             (KeltnerReentryStrategy(), "strategy_3_keltner_reentry"),
             (ChandelierTrailingStrategy(), "strategy_4_chandelier_trailing"),
+            (SweepEngulfRetracementStrategy(), "strategy_5_sweep_engulf"),
         ])
 
     if args.mode in ("all", "exits"):

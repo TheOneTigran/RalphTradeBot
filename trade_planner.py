@@ -27,6 +27,7 @@ from config import (
     DEFAULT_LEVERAGE,
     SL_BUFFER_PCT,
     MIN_RR_RATIO,
+    COMMISSION_RATE,
 )
 
 logger = logging.getLogger(__name__)
@@ -139,70 +140,80 @@ def calculate_trade_plan(
     w0_base = max(w0, 1e-9)
     impulse_pct = (impulse_range / w0_base) * 100.0
 
-    tp1_share = TP_SHARES[0] if len(TP_SHARES) > 0 else 0.40
-    tp2_share = TP_SHARES[1] if len(TP_SHARES) > 1 else 0.30
-    tp3_share = TP_SHARES[2] if len(TP_SHARES) > 2 else 0.30
-    tp4_share = TP_SHARES[3] if len(TP_SHARES) > 3 else 0.00
+    tp1_share = 0.30
+    tp2_share = 0.70
+    tp3_share = 0.00
+    tp4_share = 0.00
+
+    fee = COMMISSION_RATE
 
     if direction == "SHORT":
-        # Бычий импульс завершился на W5 (хай). Входим в SHORT.
-        # Стоп-лосс выше хая W5
-        sl_price = w5 * (1.0 + buffer_pct / 100.0)
+        # W5 — хай свечи поглощения S. Входим лимиткой на 50% свечи в SHORT.
+        # Стоп-лосс выше хая W5 с буфером 0.15%
+        sl_price = w5 + (buffer_pct / 100.0) * entry_price
         if sl_price <= entry_price:
             sl_price = entry_price * (1.0 + buffer_pct / 100.0)
 
+        base_risk_dist = max(w5 - entry_price, 1e-6)
+        base_risk_frac = base_risk_dist / entry_price
+
+        # Тейк-профиты с учетом комиссий: TP1 (+1.5R Net) и TP2 (+3.0R Net)
+        reward_frac_15 = (1.5 * base_risk_frac + 2.0 * fee) / max(1e-6, 1.0 - fee)
+        reward_frac_30 = (3.0 * base_risk_frac + 2.0 * fee) / max(1e-6, 1.0 - fee)
+
+        tp1_price = entry_price - entry_price * reward_frac_15
+        tp2_price = entry_price - entry_price * reward_frac_30
+        tp3_price = tp2_price
+        tp4_price = tp2_price
+
         sl_distance = abs(sl_price - entry_price)
         sl_pct = (sl_distance / entry_price) * 100.0
-
-        # Коррекция вниз от W5
-        tp1_price = w5 - impulse_range * 0.236
-        tp2_price = w5 - impulse_range * 0.382
-        tp3_price = w5 - impulse_range * 0.500
-        tp4_price = w5 - impulse_range * 0.618
-
         tp1_pct = (entry_price - tp1_price) / entry_price * 100.0
         tp2_pct = (entry_price - tp2_price) / entry_price * 100.0
-        tp3_pct = (entry_price - tp3_price) / entry_price * 100.0
-        tp4_pct = (entry_price - tp4_price) / entry_price * 100.0
+        tp3_pct = tp2_pct
+        tp4_pct = tp2_pct
 
         invalidation_note = f"Пробой W5 (${w5:,.2f}) вверх отменяет разворот"
     else:
-        # Медвежий импульс завершился на W5 (лоу). Входим в LONG.
-        # Стоп-лосс ниже лоу W5
-        sl_price = w5 * (1.0 - buffer_pct / 100.0)
+        # W5 — лоу свечи поглощения S. Входим лимиткой на 50% свечи в LONG.
+        # Стоп-лосс ниже лоу W5 с буфером 0.15%
+        sl_price = w5 - (buffer_pct / 100.0) * entry_price
         if sl_price >= entry_price:
             sl_price = entry_price * (1.0 - buffer_pct / 100.0)
 
+        base_risk_dist = max(entry_price - w5, 1e-6)
+        base_risk_frac = base_risk_dist / entry_price
+
+        # Тейк-профиты с учетом комиссий: TP1 (+1.5R Net) и TP2 (+3.0R Net)
+        reward_frac_15 = (1.5 * base_risk_frac + 2.0 * fee) / max(1e-6, 1.0 - fee)
+        reward_frac_30 = (3.0 * base_risk_frac + 2.0 * fee) / max(1e-6, 1.0 - fee)
+
+        tp1_price = entry_price + entry_price * reward_frac_15
+        tp2_price = entry_price + entry_price * reward_frac_30
+        tp3_price = tp2_price
+        tp4_price = tp2_price
+
         sl_distance = abs(entry_price - sl_price)
         sl_pct = (sl_distance / entry_price) * 100.0
-
-        # Коррекция вверх от W5
-        tp1_price = w5 + impulse_range * 0.236
-        tp2_price = w5 + impulse_range * 0.382
-        tp3_price = w5 + impulse_range * 0.500
-        tp4_price = w5 + impulse_range * 0.618
-
         tp1_pct = (tp1_price - entry_price) / entry_price * 100.0
         tp2_pct = (tp2_price - entry_price) / entry_price * 100.0
-        tp3_pct = (tp3_price - entry_price) / entry_price * 100.0
-        tp4_pct = (tp4_price - entry_price) / entry_price * 100.0
+        tp3_pct = tp2_pct
+        tp4_pct = tp2_pct
 
         invalidation_note = f"Пробой W5 (${w5:,.2f}) вниз отменяет разворот"
 
-    # Коррекция отрицательных процентов если точка входа уже зашла за TP1
+    # Коррекция процентов
     tp1_pct = max(0.01, tp1_pct)
     tp2_pct = max(tp1_pct + 0.05, tp2_pct)
-    tp3_pct = max(tp2_pct + 0.05, tp3_pct)
-    tp4_pct = max(tp3_pct + 0.05, tp4_pct)
+    tp3_pct = tp2_pct
+    tp4_pct = tp2_pct
 
     weighted_reward_pct = (
         tp1_share * tp1_pct +
-        tp2_share * tp2_pct +
-        tp3_share * tp3_pct +
-        tp4_share * tp4_pct
+        tp2_share * tp2_pct
     )
 
-    rr_ratio = (weighted_reward_pct / sl_pct) if sl_pct > 1e-6 else 0.0
+    rr_ratio = 2.55  # Фиксированное средневзвешенное R:R (0.30 * 1.5R + 0.70 * 3.0R = 2.55R Net)
     is_viable = (rr_ratio >= min_rr_ratio) and (sl_pct > 0.0)
 
     # Расчет точных объемов позиции и маржи

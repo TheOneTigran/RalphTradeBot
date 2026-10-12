@@ -53,16 +53,19 @@ def _fmt_vol(v: float) -> str:
     return f"${v:,.1f}"
 
 
-def _fmt_coins(amount: float) -> str:
-    """Форматирует количество монет."""
+def _fmt_coins_code(amount: float) -> str:
+    """Форматирует количество монет для 1-клик копирования (в теге <code>, без букв)."""
     if amount >= 1000.0:
-        return f"{amount:,.0f}"
+        c_str = f"{amount:,.0f}".replace(",", "")
     elif amount >= 10.0:
-        return f"{amount:,.2f}"
+        c_str = f"{amount:.2f}"
     elif amount >= 1.0:
-        return f"{amount:,.3f}"
+        c_str = f"{amount:.3f}"
+    elif amount >= 0.01:
+        c_str = f"{amount:.4f}"
     else:
-        return f"{amount:,.5f}"
+        c_str = f"{amount:.6f}"
+    return f"<code>{c_str}</code>"
 
 
 def format_signal_message(
@@ -70,11 +73,11 @@ def format_signal_message(
     interval: str,
     direction: str,
     signal_price: float,
-    swept_rsi: float,
-    signal_rsi: float,
-    current_rsi: float,
-    reason: str,
-    score: int,
+    swept_rsi: float = 0.0,
+    signal_rsi: float = 0.0,
+    current_rsi: float = 0.0,
+    reason: str = "",
+    score: int = 70,
     detection_time: Optional[datetime] = None,
     trade_plan: Optional[Any] = None,
     dur_bars: Optional[int] = None,
@@ -85,22 +88,19 @@ def format_signal_message(
     w3_longest: bool = True,
     conflict_note: Optional[str] = None,
 ) -> str:
-    """Формирует текст сообщения для Telegram с полноценным торговым планом и HTML-разметкой."""
+    """Формирует текст сообщения для Telegram с 1-клик копируемыми уровнями и объемами."""
     dt = detection_time or datetime.now()
-    dt_str = dt.strftime("%d.%m.%Y в %H:%M")
+    dt_str = dt.strftime("%d.%m.%Y в %H:%M МСК")
     
     if direction == "SHORT":
         header = "🔴 <b>МЕДВЕЖИЙ ИМПУЛЬС ЗАВЕРШЁН (W5)</b>"
         dir_badge = "▼ <b>SHORT</b>"
-        sl_note = "└ Стоп-Маркет за пиком W5"
-        imp_sign = "+"
+        sl_note = "└ Стоп-Маркет за тень с буфером 0.15%"
     else:
         header = "🟢 <b>БЫЧИЙ ИМПУЛЬС ЗАВЕРШЁН (W5)</b>"
         dir_badge = "▲ <b>LONG</b>"
-        sl_note = "└ Стоп-Маркет за лоу W5"
-        imp_sign = "-"
+        sl_note = "└ Стоп-Маркет за тень с буфером 0.15%"
 
-    # Если есть конфликт активной сделки — выводим информационную плашку
     conflict_banner = ""
     if conflict_note:
         conflict_banner = (
@@ -109,80 +109,38 @@ def format_signal_message(
             f"──────────────────────────\n\n"
         )
 
-    fail_fast_map = {"5m": "30 минут (6 свечей)", "15m": "45 минут (3 свечи)", "1h": "3 часа (3 свечи)", "4h": "8 часов (2 свечи)"}
-    fail_fast_str = fail_fast_map.get(interval, "3 свечи")
-
-    # Если есть TradePlan
     if trade_plan is not None:
-        # _fmt_pc: цена для копирования (чистое число в <code>)
-        # _fmt_p: цена для отображения (с $)
         entry_c = _fmt_pc(trade_plan.entry_price)
         sl_c = _fmt_pc(trade_plan.sl_price)
         tp1_c = _fmt_pc(trade_plan.tp1_price)
         tp2_c = _fmt_pc(trade_plan.tp2_price)
-        tp3_c = _fmt_pc(trade_plan.tp3_price)
 
         pos_vol_str = _fmt_vol(getattr(trade_plan, 'pos_size_usd', 0.0))
-        coins_str = _fmt_coins(getattr(trade_plan, 'pos_size_coins', 0.0))
+        coins_c = _fmt_coins_code(getattr(trade_plan, 'pos_size_coins', 0.0))
         margin_str = f"${getattr(trade_plan, 'margin_usd', 0.0):.1f}"
         lev = getattr(trade_plan, 'leverage', 10)
-        risk_usd = getattr(trade_plan, 'risk_budget_usd', 10.0)
+        risk_usd = getattr(trade_plan, 'risk_budget_usd', 5.0)
 
         tp1_vol_s = _fmt_vol(getattr(trade_plan, 'tp1_size_usd', 0.0))
-        tp1_coins_s = _fmt_coins(getattr(trade_plan, 'tp1_size_coins', 0.0))
+        tp1_coins_c = _fmt_coins_code(getattr(trade_plan, 'tp1_size_coins', 0.0))
         tp2_vol_s = _fmt_vol(getattr(trade_plan, 'tp2_size_usd', 0.0))
-        tp2_coins_s = _fmt_coins(getattr(trade_plan, 'tp2_size_coins', 0.0))
+        tp2_coins_c = _fmt_coins_code(getattr(trade_plan, 'tp2_size_coins', 0.0))
 
         plan_block = (
             f"━━━ 🎯 <b>КУДА И ЧТО ВЫСТАВЛЯТЬ (ОРДЕРА):</b> ━━━\n\n"
-            f"1️⃣ {dir_badge} │ Вход: {entry_c}\n"
-            f"   └ Объем: <b>{pos_vol_str}</b> (<b>{coins_str}</b> монет)\n"
-            f"   └ Реком. маржа: <b>{margin_str}</b> (плечо {lev}x / риск ${risk_usd:.1f})\n\n"
+            f"1️⃣ {dir_badge} │ Вход (Limit 50%): {entry_c}\n"
+            f"   └ Объем: {coins_c} монет (<b>{pos_vol_str}</b>)\n"
+            f"   └ Маржа: <b>{margin_str}</b> (плечо {lev}x │ риск <b>${risk_usd:.1f}</b>)\n\n"
             f"2️⃣ 🛑 <b>STOP LOSS:</b> {sl_c} (−{trade_plan.sl_pct:.2f}%)\n"
             f"   {sl_note}\n\n"
-            f"3️⃣ 🎯 <b>TP1 (23.6% Фибо):</b> {tp1_c} (+{trade_plan.tp1_pct:.2f}%)\n"
-            f"   └ Тип: Limit │ <b>Закрыть {int(trade_plan.tp1_share*100)}%</b> ({tp1_vol_s} / {tp1_coins_s} монет)\n\n"
-            f"4️⃣ 🎯 <b>TP2 (38.2% Фибо):</b> {tp2_c} (+{trade_plan.tp2_pct:.2f}%)\n"
-            f"   └ Тип: Limit │ <b>Закрыть {int(trade_plan.tp2_share*100)}%</b> ({tp2_vol_s} / {tp2_coins_s} монет)\n\n"
-            f"5️⃣ 🏃 <b>Остаток {int(trade_plan.tp3_share*100)}% (Раннер):</b>\n"
-            f"   └ Цель TP3: {tp3_c} или трейлинг по Chandelier ATR\n\n"
-            f"━━━ 📋 <b>ЧТО ДЕЛАТЬ ПОСЛЕ ВХОДА (РЕГЛАМЕНТ):</b> ━━━\n\n"
-            f"🛡️ <b>Безубыток:</b> Бот пришлёт ответ при взятии TP2 ➔ перенести SL в БУ (+0.1%).\n"
-            f"⏱️ <b>Таймер {fail_fast_str}:</b> Бот сам отслеживает свечи. Если импульс угаснет (менее +0.4R), бот пришлёт команду закрыть остаток по рынку (Fail-Fast).\n\n"
-            f"📊 R:R (средневзвешенный): <b>{trade_plan.rr_ratio:.1f} : 1</b>\n"
-            f"📈 RSI: <b>{swept_rsi:.1f} ➔ {signal_rsi:.1f}</b> (дивергенция)\n\n"
+            f"3️⃣ 🎯 <b>TP1 (+1.5R Net):</b> {tp1_c} (+{trade_plan.tp1_pct:.2f}%)\n"
+            f"   └ Закрыть 30%: {tp1_coins_c} монет (<b>{tp1_vol_s}</b>)\n\n"
+            f"4️⃣ 🎯 <b>TP2 (+3.0R Net):</b> {tp2_c} (+{trade_plan.tp2_pct:.2f}%)\n"
+            f"   └ Закрыть 70%: {tp2_coins_c} монет (<b>{tp2_vol_s}</b>)\n\n"
         )
-
-        w0_extra = ""
-        if w0_rsi is not None:
-            w0_extra = f" (RSI {w0_rsi:.1f}"
-            if origin_div:
-                w0_extra += " • W0-DIV ✅)"
-            else:
-                w0_extra += ")"
-
-        w_struct_block = (
-            f"━━━ <b>ВОЛНОВАЯ СТРУКТУРА</b> ━━━\n\n"
-            f"W0: {_fmt_p(trade_plan.w0_price)}{w0_extra}\n"
-            f"W1: {_fmt_p(trade_plan.w1_price)} │ W2: {_fmt_p(trade_plan.w2_price)}\n"
-            f"W3: {_fmt_p(trade_plan.w3_price)} │ W4: {_fmt_p(trade_plan.w4_price)}\n"
-            f"W5: {_fmt_p(trade_plan.w5_price)} (экстремум импульса)\n\n"
-            f"📏 Длина импульса: <b>{_fmt_p(trade_plan.impulse_range)} ({imp_sign}{trade_plan.impulse_pct:.2f}%)</b>\n"
-        )
-        if dur_hours and dur_bars:
-            w_struct_block += f"⏳ Формирование: <b>{dur_hours:.1f}ч</b> ({dur_bars} бар.)\n"
-        if w3_longest:
-            w_struct_block += "🔄 W3 = самая длинная волна ✅\n"
-        w_struct_block += "\n"
     else:
-        price_str = _fmt_p(signal_price)
-        plan_block = (
-            f"💰 Цена: <b>{price_str}</b>\n"
-            f"📊 RSI: <b>{swept_rsi:.1f} ➔ {signal_rsi:.1f}</b>\n\n"
-        )
-        w_struct_block = ""
-
-    safe_reason = html.escape(str(reason))
+        price_c = _fmt_pc(signal_price)
+        plan_block = f"💰 Вход: {price_c}\n\n"
 
     msg = (
         f"{conflict_banner}"
@@ -190,10 +148,6 @@ def format_signal_message(
         f"📌 <code>{symbol}</code> (Crypto Futures)\n"
         f"⏱️ Таймфрейм: <b>{interval}</b>\n\n"
         f"{plan_block}"
-        f"{w_struct_block}"
-        f"━━━ <b>ОБОСНОВАНИЕ</b> ━━━\n\n"
-        f"{safe_reason}\n\n"
-        f"🎯 Оценка ИИ: <b>{score}/100</b> (Textbook)\n"
         f"📅 {dt_str}"
     )
     return msg

@@ -372,7 +372,6 @@ class TelegramUIController:
 
                 tp1_st = "✅ ВЗЯТ" if t["tp1_hit"] else f"⏳ {_fmt_price(t['tp1_price'])}"
                 tp2_st = "✅ ВЗЯТ" if t["tp2_hit"] else f"⏳ {_fmt_price(t['tp2_price'])}"
-                tp3_st = "✅ ВЗЯТ" if t.get("tp3_hit") else f"⏳ {_fmt_price(t['tp3_price'])}"
                 be_st = "🛡 В БЕЗУБЫТКЕ" if t["be_triggered"] else f"{_fmt_price(t['sl_price'])}"
 
                 text += (
@@ -380,9 +379,8 @@ class TelegramUIController:
                     f"├ Вход: <b>{_fmt_price(entry)}</b> │ Тек: <b>{_fmt_price(cur)}</b>\n"
                     f"├ {pnl_em} <b>PnL:</b> <b>{pnl_sign}${pnl_usd:,.2f} ({pnl_sign}{pnl_pct:.2f}%)</b>\n"
                     f"├ Объём: ${t['pos_size_usd']:,.1f} │ Риск: ${t['risk_usd']:.1f}\n"
-                    f"├ TP1 (40%): {tp1_st}\n"
-                    f"├ TP2 (30%): {tp2_st}\n"
-                    f"├ TP3 (30%): {tp3_st}\n"
+                    f"├ TP1 (30%): {tp1_st}\n"
+                    f"├ TP2 (70%): {tp2_st}\n"
                     f"└ Стоп: <b>{be_st}</b>\n\n"
                 )
 
@@ -491,12 +489,13 @@ class TelegramUIController:
             f"💰 <b>Торговый депозит:</b> <b>${dep:,.0f}</b>\n"
             f"🛡 <b>Риск на сделку:</b> <b>${risk:,.1f}</b> (<b>{pct}%</b> от депо)\n"
             f"⚡ <b>Кредитное плечо:</b> <b>{lev}x</b>\n"
-            f"🧠 <b>Порог качества Vision AI:</b> <b>≥{score}%</b>\n\n"
+            f"🎯 <b>Алгоритмический фильтр (Score):</b> <b>≥{score}%</b>\n"
+            f"👁️ <b>Vision AI фильтр:</b> <b>ВЫКЛ</b> (Модель 2: Sweep & Engulfing)\n\n"
             f"<i>Выберите быстрый пресет кнопками или введите команду:</i>\n"
-            f"• <code>/set_dep 2500</code> — установить точный баланс депозита\n"
-            f"• <code>/set_risk 25</code> — установить фиксированный риск ($)\n"
-            f"• <code>/set_lev 15</code> — изменить кредитное плечо\n"
-            f"• <code>/set_score 85</code> — изменить порог нейросети"
+            f"• <code>/set_dep 500</code> — изменить торговый депозит ($)\n"
+            f"• <code>/set_pct 1.0</code> — изменить риск в % от депо (напр. 1%)\n"
+            f"• <code>/set_risk 5</code> — изменить фиксированный риск в $\n"
+            f"• <code>/set_lev 10</code> — изменить кредитное плечо\n"
         )
 
         buttons = [
@@ -823,6 +822,15 @@ class TelegramUIController:
                 self.send_message(chat_id, f"✅ Риск на сделку установлен: <b>${val:,.2f}</b>")
             else:
                 self.send_message(chat_id, "⚠️ Использование: <code>/set_risk 25</code>")
+
+        elif cmd in ("/set_pct", "/risk_pct", "/pct"):
+            parts = text.split()
+            if len(parts) >= 2 and parts[1].replace(".", "", 1).isdigit():
+                val = float(parts[1])
+                risk_usd = set_risk_pct(val)
+                self.send_message(chat_id, f"✅ Риск на сделку установлен: <b>{val:.1f}%</b> (${risk_usd:,.2f})")
+            else:
+                self.send_message(chat_id, "⚠️ Использование: <code>/set_pct 1.0</code>")
 
         elif cmd in ("/set_lev", "/leverage"):
             parts = text.split()

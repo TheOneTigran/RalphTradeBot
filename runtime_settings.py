@@ -120,7 +120,7 @@ def get_runtime_config(db_path: Path | str = ANALYTICS_DB_PATH) -> Dict[str, Any
         live_timeframes = list(LIVE_TIMEFRAMES)
         set_raw_setting("live_timeframes", live_timeframes, db_path=db_path)
 
-    deposit_usd = float(get_raw_setting("deposit_usd", 1000.0, db_path=db_path))
+    deposit_usd = float(get_raw_setting("deposit_usd", 500.0, db_path=db_path))
     risk_budget_usd = float(get_raw_setting("risk_budget_usd", float(RISK_BUDGET_USD), db_path=db_path))
     risk_pct = round((risk_budget_usd / deposit_usd * 100.0), 2) if deposit_usd > 0 else 1.0
     default_leverage = int(get_raw_setting("default_leverage", int(DEFAULT_LEVERAGE), db_path=db_path))

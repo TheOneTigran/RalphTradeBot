@@ -31,6 +31,8 @@ class TradeSignal:
     wave_points: Dict[str, float]
     raw_df: pd.DataFrame  # Срез свечей основного ТФ (15m)
     df_1m: Optional[pd.DataFrame] = None  # Минутные котировки для Multi-TF анализа
+    wave_indices: Dict[str, int] = field(default_factory=dict)  # Точные индексы баров W0..W5
+    details: Dict[str, Any] = field(default_factory=dict)  # Детали импульса и RSI-дивергенций
 
 
 @dataclass

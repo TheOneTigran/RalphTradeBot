@@ -89,31 +89,55 @@ def load_all_market_data(
         logger.error(f"Папка с данными не найдена: {data_dir}")
         return market_data
 
-    files = list(data_dir.glob("*_1m.parquet"))
-    for f in files:
-        sym = f.name.replace("_1m.parquet", "").upper()
+    files_parquet = list(data_dir.glob("*_1m.parquet"))
+    files_pkl = list(data_dir.glob("*_15m.pkl")) if not files_parquet else []
+    files_csv = list(data_dir.glob("*_15m.csv")) if (not files_parquet and not files_pkl) else []
+    target_files = files_parquet or files_pkl or files_csv
+
+    for f in target_files:
+        sym = f.name.split('_')[0].upper()
         if symbols and sym not in symbols:
             continue
         try:
-            raw = pd.read_parquet(f)
+            if f.suffix == ".parquet":
+                raw = pd.read_parquet(f)
+            elif f.suffix == ".pkl":
+                raw = pd.read_pickle(f)
+            else:
+                raw = pd.read_csv(f)
+
+            col_map = {c.lower(): c for c in raw.columns}
+            for std_col in ['open', 'high', 'low', 'close', 'volume']:
+                if std_col in col_map and col_map[std_col] != std_col:
+                    raw.rename(columns={col_map[std_col]: std_col}, inplace=True)
+
             if not isinstance(raw.index, pd.DatetimeIndex):
-                if 'datetime_utc' in raw.columns:
+                if 'timestamp' in raw.columns:
+                    raw.index = pd.to_datetime(raw['timestamp'], utc=True)
+                elif 'datetime_utc' in raw.columns:
                     raw.index = pd.to_datetime(raw['datetime_utc'], utc=True)
                 elif 'timestamp_ms' in raw.columns:
                     raw.index = pd.to_datetime(raw['timestamp_ms'], unit='ms', utc=True)
+                elif 'open_time' in raw.columns:
+                    raw.index = pd.to_datetime(raw['open_time'], unit='ms', utc=True)
                 else:
-                    raw.index = pd.to_datetime(raw.iloc[:, 0], unit='ms', utc=True)
+                    raw.index = pd.to_datetime(raw.iloc[:, 0], utc=True)
 
-            resampled = resample_ohlcv(raw, interval)
+            # Если загружен готовый 15m датасет, а целевой ТФ 15m — используем его напрямую
+            if "_15m" in f.name and interval == "15m":
+                resampled = raw
+            else:
+                resampled = resample_ohlcv(raw, interval)
+
             if len(resampled) >= 150:
                 market_data[sym] = {
                     "main": resampled,
-                    "1m": raw,
+                    "1m": raw if f.suffix == ".parquet" else None,
                 }
         except Exception as e:
             logger.warning(f"Ошибка загрузки {f.name}: {e}")
 
-    logger.info(f"Загружено инструментов: {len(market_data)} (Multi-TF: main={interval} + 1m)")
+    logger.info(f"Загружено инструментов: {len(market_data)} (Multi-TF: main={interval})")
     return market_data
 
 
@@ -188,6 +212,8 @@ def detect_all_signals_in_history(
                                 wave_points=algo_res.wave_points,
                                 raw_df=df.iloc[:p2 + 1],
                                 df_1m=df_1m,
+                                wave_indices=algo_res.wave_indices,
+                                details=algo_res.details,
                             )
                         )
 
@@ -232,6 +258,8 @@ def detect_all_signals_in_history(
                                 wave_points=algo_res.wave_points,
                                 raw_df=df.iloc[:p2 + 1],
                                 df_1m=df_1m,
+                                wave_indices=algo_res.wave_indices,
+                                details=algo_res.details,
                             )
                         )
 

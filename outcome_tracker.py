@@ -32,10 +32,9 @@ import requests
 from analytics_db import get_active_signals, update_signal_outcome, init_db
 from config import (
     ANALYTICS_DB_PATH,
+    BREAKEVEN_AFTER_TP1,
     BREAKEVEN_AFTER_TP2,
     BREAKEVEN_OFFSET_PCT,
-    FAIL_FAST_BARS,
-    FAIL_FAST_MIN_R,
     COMMISSION_RATE,
     TP_SHARES,
     OUTCOME_MAX_BARS_TTL,
@@ -196,51 +195,27 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
             if adv > max_adverse:
                 max_adverse = round(adv, 2)
 
-            # TP1 (40%)
+            # TP1 (30%) -> Фиксация 30% и перенос стопа остатка 70% в безубыток
             if high_p >= tp1 and not tp1_hit:
                 tp1_hit = True
                 tp1_hit_at = c_time_iso
+                tp1_bar_idx = bar_counter
                 if bars_to_first_tp == 0:
                     bars_to_first_tp = bar_counter
 
-            # TP2 (30%) -> Активация безубытка СТРОГО на последующих барах
-            if high_p >= tp2 and not tp2_hit:
+            # TP2 (70%) -> Финальный тейк! Закрываем позицию на 100% (+2.55R Net)
+            if high_p >= tp2:
                 tp2_hit = True
                 tp2_hit_at = c_time_iso
-                tp2_bar_idx = bar_counter
-            elif tp2_hit and tp2_bar_idx is None:
-                if tp2_hit_at and c_time_iso == tp2_hit_at:
-                    tp2_bar_idx = bar_counter
-                elif high_p >= tp2:
-                    tp2_bar_idx = bar_counter
-
-            # TP3 (30% Runner) -> Финальная цель! Закрываем позицию на 100%
-            if high_p >= tp3:
-                tp3_hit = True
-                tp3_hit_at = c_time_iso
-                status = "closed_tp3"
+                status = "closed_tp2"
                 bars_to_close = bar_counter
                 tp1_g = (tp1 - entry) / entry * 100.0
                 tp2_g = (tp2 - entry) / entry * 100.0
-                tp3_g = (tp3 - entry) / entry * 100.0
-                final_pnl = round(0.40 * tp1_g + 0.30 * tp2_g + 0.30 * tp3_g, 2)
+                final_pnl = round(0.30 * tp1_g + 0.70 * tp2_g, 2)
                 break
 
-            # Fail-Fast Time-Stop (динамический порог по ТФ)
-            if bar_counter >= effective_ff_bars and not tp1_hit and not tp2_hit and not fail_fast_triggered:
-                cur_profit_pct = (close_p - entry) / entry * 100.0
-                cur_r = cur_profit_pct / sl_pct if sl_pct > 0 else 0.0
-                if cur_r < FAIL_FAST_MIN_R:
-                    fail_fast_triggered = True
-                    fail_fast_hit_at = c_time_iso
-                    status = "closed_fail_fast"
-                    bars_to_close = bar_counter
-                    final_pnl = round(cur_profit_pct, 2)
-                    break
-
-            # Проверка Стоп-лосса / Безубытка
-            # Безубыток разрешён ТОЛЬКО если TP2 был взят на ПРЕДЫДУЩЕМ баре (bar_counter > tp2_bar_idx)
-            is_be_eligible = (BREAKEVEN_AFTER_TP2 and tp2_bar_idx is not None and bar_counter > tp2_bar_idx) or be_triggered
+            # Проверка Стоп-лосса / Безубытка (LONG)
+            is_be_eligible = tp1_hit or be_triggered
             if is_be_eligible:
                 if low_p <= be_price:
                     be_triggered = True
@@ -248,8 +223,7 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
                     status = "closed_be"
                     bars_to_close = bar_counter
                     tp1_g = (tp1 - entry) / entry * 100.0
-                    tp2_g = (tp2 - entry) / entry * 100.0
-                    final_pnl = round(0.40 * tp1_g + 0.30 * tp2_g + 0.30 * BREAKEVEN_OFFSET_PCT, 2)
+                    final_pnl = round(0.30 * tp1_g, 2)
                     break
             else:
                 if low_p <= sl:
@@ -268,50 +242,27 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
             if adv > max_adverse:
                 max_adverse = round(adv, 2)
 
-            # TP1 (40%)
+            # TP1 (30%) -> Фиксация 30% и перенос стопа остатка 70% в безубыток
             if low_p <= tp1 and not tp1_hit:
                 tp1_hit = True
                 tp1_hit_at = c_time_iso
+                tp1_bar_idx = bar_counter
                 if bars_to_first_tp == 0:
                     bars_to_first_tp = bar_counter
 
-            # TP2 (30%) -> Активация безубытка СТРОГО на последующих барах
-            if low_p <= tp2 and not tp2_hit:
+            # TP2 (70%) -> Финальный тейк! Закрываем позицию на 100% (+2.55R Net)
+            if low_p <= tp2:
                 tp2_hit = True
                 tp2_hit_at = c_time_iso
-                tp2_bar_idx = bar_counter
-            elif tp2_hit and tp2_bar_idx is None:
-                if tp2_hit_at and c_time_iso == tp2_hit_at:
-                    tp2_bar_idx = bar_counter
-                elif low_p <= tp2:
-                    tp2_bar_idx = bar_counter
-
-            # TP3 (30% Runner) -> Финальная цель! Закрываем позицию на 100%
-            if low_p <= tp3:
-                tp3_hit = True
-                tp3_hit_at = c_time_iso
-                status = "closed_tp3"
+                status = "closed_tp2"
                 bars_to_close = bar_counter
                 tp1_g = (entry - tp1) / entry * 100.0
                 tp2_g = (entry - tp2) / entry * 100.0
-                tp3_g = (entry - tp3) / entry * 100.0
-                final_pnl = round(0.40 * tp1_g + 0.30 * tp2_g + 0.30 * tp3_g, 2)
+                final_pnl = round(0.30 * tp1_g + 0.70 * tp2_g, 2)
                 break
 
-            # Fail-Fast Time-Stop (динамический порог по ТФ)
-            if bar_counter >= effective_ff_bars and not tp1_hit and not tp2_hit and not fail_fast_triggered:
-                cur_profit_pct = (entry - close_p) / entry * 100.0
-                cur_r = cur_profit_pct / sl_pct if sl_pct > 0 else 0.0
-                if cur_r < FAIL_FAST_MIN_R:
-                    fail_fast_triggered = True
-                    fail_fast_hit_at = c_time_iso
-                    status = "closed_fail_fast"
-                    bars_to_close = bar_counter
-                    final_pnl = round(cur_profit_pct, 2)
-                    break
-
-            # Проверка Стоп-лосса / Безубытка (SHORT: строго bar_counter > tp2_bar_idx)
-            is_be_eligible = (BREAKEVEN_AFTER_TP2 and tp2_bar_idx is not None and bar_counter > tp2_bar_idx) or be_triggered
+            # Проверка Стоп-лосса / Безубытка (SHORT)
+            is_be_eligible = tp1_hit or be_triggered
             if is_be_eligible:
                 if high_p >= be_price:
                     be_triggered = True
@@ -319,8 +270,7 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
                     status = "closed_be"
                     bars_to_close = bar_counter
                     tp1_g = (entry - tp1) / entry * 100.0
-                    tp2_g = (entry - tp2) / entry * 100.0
-                    final_pnl = round(0.40 * tp1_g + 0.30 * tp2_g + 0.30 * BREAKEVEN_OFFSET_PCT, 2)
+                    final_pnl = round(0.30 * tp1_g, 2)
                     break
             else:
                 if high_p >= sl:

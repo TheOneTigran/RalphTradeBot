@@ -273,87 +273,132 @@ def scan_live_pair(
     open_p = df['open'].values.astype(np.float64)
     n = len(df)
 
+    vol = df['volume'].values.astype(np.float64)
+    vol_ma = pd.Series(vol).rolling(15).mean().values
+
     rsi_len = 7 if interval in ("5m", "15m") else 14
     rsi = calculate_rsi_wilder(close, period=rsi_len)
 
-    rsi_ob = 70.0
-    rsi_os = 30.0
     pivot_order = 3
-    min_pivot_dist = 4
-    max_pivot_dist = 45
-    max_pivot_age = 8
-
     high_pivots = argrelextrema(high, np.greater_equal, order=pivot_order)[0]
     low_pivots = argrelextrema(low, np.less_equal, order=pivot_order)[0]
 
-    # Ищем дивергенцию, сформированную в пределах последних max_pivot_age закрытых свечей
-    latest_candle_idx = n - 1
+    # Проверяем свечи, закрывшиеся последними (n-1 и n-2)
+    latest_candles = [n - 1]
+    if n >= 2:
+        latest_candles.append(n - 2)
 
-    candidates: List[Tuple[int, str, int, float, float, float, float]] = []
+    candidates: List[Tuple[int, str, int, float, float, float, float, Any]] = []
 
-    # 1. Bearish Divergence (SHORT)
-    if len(high_pivots) >= 2:
-        for i in range(len(high_pivots) - 1, 0, -1):
-            p2 = int(high_pivots[i])
-            p1 = int(high_pivots[i - 1])
-            # Сигнал должен быть актуальным (p2 не старше max_pivot_age свечей назад)
-            if (latest_candle_idx - p2) > max_pivot_age:
-                break
-            
-            dist = p2 - p1
-            if dist < min_pivot_dist or dist > max_pivot_dist:
-                continue
-            if high[p2] <= high[p1]:
-                continue
-            
-            r1, r2 = float(rsi[p1]), float(rsi[p2])
-            if r2 >= r1 or (r1 - r2) < 2.5:
-                continue
-            if r1 < 60.0 or r2 < 45.0:
-                continue
+    # 1. Bearish Sweep & Engulfing (SHORT)
+    for t in latest_candles:
+        is_bearish = close[t] < open_p[t]
+        prev_body_bottom = min(open_p[t-1], close[t-1])
+        is_engulf = close[t] < prev_body_bottom
+        if not (is_bearish and is_engulf):
+            continue
 
-            # Проверка чистоты
-            if len(high[p1 + 1 : p2]) > 0 and np.max(high[p1 + 1 : p2]) > high[p2]:
+        c_range = high[t] - low[t]
+        if (c_range / close[t]) * 100.0 < 0.45:
+            continue
+        if vol[t] < 1.1 * vol_ma[t]:
+            continue
+
+        for p1 in reversed(high_pivots):
+            if p1 >= t:
                 continue
-            if len(rsi[p1 + 1 : p2]) > 0 and np.min(rsi[p1 + 1 : p2]) < rsi_os:
+            dist = t - p1
+            if dist < 4 or dist > 18:
+                continue
+            if high[t] <= high[p1] or high[t] < np.max(high[p1+1 : t+1]):
                 continue
 
-            candidates.append((p2, "SHORT", p1, float(high[p1]), r1, r2, float(high[p2])))
-
-    # 2. Bullish Divergence (LONG)
-    if len(low_pivots) >= 2:
-        for i in range(len(low_pivots) - 1, 0, -1):
-            p2 = int(low_pivots[i])
-            p1 = int(low_pivots[i - 1])
-            if (latest_candle_idx - p2) > max_pivot_age:
-                break
-            
-            dist = p2 - p1
-            if dist < min_pivot_dist or dist > max_pivot_dist:
+            r1, r2 = float(rsi[p1]), float(rsi[t])
+            if r1 < 60.0 or r2 < 45.0 or r2 >= r1 - 2.5:
                 continue
-            if low[p2] >= low[p1]:
-                continue
-            
-            r1, r2 = float(rsi[p1]), float(rsi[p2])
-            if r2 <= r1 or (r2 - r1) < 2.5:
-                continue
-            if r1 > 40.0 or r2 > 55.0:
+            # Фильтр чистоты RSI (никаких вылетов выше W3)
+            if np.max(rsi[p1+1 : t]) > r1 + 1.0:
                 continue
 
-            # Проверка чистоты
-            if len(low[p1 + 1 : p2]) > 0 and np.min(low[p1 + 1 : p2]) < low[p2]:
-                continue
-            if len(rsi[p1 + 1 : p2]) > 0 and np.max(rsi[p1 + 1 : p2]) > rsi_ob:
+            algo_res = detect_elliott_impulse(
+                high=high[:t+1], low=low[:t+1], close=close[:t+1], open_p=open_p[:t+1],
+                w3_bar=p1, w5_bar=t, direction='SHORT', rsi=rsi[:t+1]
+            )
+            if not algo_res.is_valid or algo_res.score < MIN_ALGO_ELLIOTT_SCORE:
                 continue
 
-            candidates.append((p2, "LONG", p1, float(low[p1]), r1, r2, float(low[p2])))
+            # Фильтры органичности Волны 5
+            w_idx = algo_res.wave_indices
+            dur_03 = max(2, w_idx['W3'] - w_idx['W0'])
+            dur_35 = w_idx['W5'] - w_idx['W3']
+            if (dur_35 / dur_03) > 2.0:
+                continue
+
+            l3 = algo_res.details.get('l3', 0.0)
+            l5 = algo_res.details.get('l5', 0.0)
+            if l3 > 0 and (l5 / l3) > 1.4:
+                continue
+
+            candidates.append((t, "SHORT", p1, float(high[p1]), r1, r2, float(high[t]), algo_res))
+            break
+
+    # 2. Bullish Sweep & Engulfing (LONG)
+    for t in latest_candles:
+        is_bullish = close[t] > open_p[t]
+        prev_body_top = max(open_p[t-1], close[t-1])
+        is_engulf = close[t] > prev_body_top
+        if not (is_bullish and is_engulf):
+            continue
+
+        c_range = high[t] - low[t]
+        if (c_range / close[t]) * 100.0 < 0.45:
+            continue
+        if vol[t] < 1.1 * vol_ma[t]:
+            continue
+
+        for p1 in reversed(low_pivots):
+            if p1 >= t:
+                continue
+            dist = t - p1
+            if dist < 4 or dist > 18:
+                continue
+            if low[t] >= low[p1] or low[t] > np.min(low[p1+1 : t+1]):
+                continue
+
+            r1, r2 = float(rsi[p1]), float(rsi[t])
+            if r1 > 40.0 or r2 > 55.0 or r2 <= r1 + 2.5:
+                continue
+            # Фильтр чистоты RSI
+            if np.min(rsi[p1+1 : t]) < r1 - 1.0:
+                continue
+
+            algo_res = detect_elliott_impulse(
+                high=high[:t+1], low=low[:t+1], close=close[:t+1], open_p=open_p[:t+1],
+                w3_bar=p1, w5_bar=t, direction='LONG', rsi=rsi[:t+1]
+            )
+            if not algo_res.is_valid or algo_res.score < MIN_ALGO_ELLIOTT_SCORE:
+                continue
+
+            w_idx = algo_res.wave_indices
+            dur_03 = max(2, w_idx['W3'] - w_idx['W0'])
+            dur_35 = w_idx['W5'] - w_idx['W3']
+            if (dur_35 / dur_03) > 2.0:
+                continue
+
+            l3 = algo_res.details.get('l3', 0.0)
+            l5 = algo_res.details.get('l5', 0.0)
+            if l3 > 0 and (l5 / l3) > 1.4:
+                continue
+
+            candidates.append((t, "LONG", p1, float(low[p1]), r1, r2, float(low[t]), algo_res))
+            break
 
     if not candidates:
         return None
 
     # Берём самый свежий кандидат
     candidates.sort(key=lambda c: c[0], reverse=True)
-    p2, direction, p1, p1_price, p1_rsi, p2_rsi, p2_price = candidates[0]
+    p2, direction, p1, p1_price, p1_rsi, p2_rsi, p2_price, algo_res = candidates[0]
 
     # Проверка на дубликат по временной метке бара W5 и сдвигу экстремумов
     bar_ts = int(df.index[p2].timestamp()) if isinstance(df.index, pd.DatetimeIndex) else p2
@@ -370,26 +415,15 @@ def scan_live_pair(
     if is_dup:
         return None
 
-    # 1. Алгоритмический анализ импульса Эллиотта
-    algo_res = detect_elliott_impulse(
-        high=high, low=low, close=close, open_p=open_p,
-        w3_bar=p1, w5_bar=p2,
-        direction=direction, rsi=rsi,
-    )
-
-    if not algo_res.is_valid or algo_res.score < MIN_ALGO_ELLIOTT_SCORE:
-        with _seen_lock:
-            seen_signals.add(sig_id)
-        return None
-
-    # Точка входа: цена закрытия W5 (или open текущей свечи если есть)
-    entry_price = float(close[p2]) if p2 + 1 >= n else float(open_p[p2 + 1])
+    # Точка входа: 50% ретрейсмент свечи поглощения (Лимитный ордер)
+    c_range = high[p2] - low[p2]
+    entry_price = float(low[p2] + 0.50 * c_range)
 
     risk_budget_usd = cfg.get("risk_budget_usd", RISK_BUDGET_USD) if cfg else RISK_BUDGET_USD
     leverage = cfg.get("default_leverage", DEFAULT_LEVERAGE) if cfg else DEFAULT_LEVERAGE
     min_score = cfg.get("min_score", TELEGRAM_MIN_SCORE) if cfg else TELEGRAM_MIN_SCORE
 
-    # 2. Расчёт профессионального торгового плана
+    # 2. Расчёт профессионального торгового плана Sweep & Engulfing
     trade_plan = calculate_trade_plan(
         wave_points=algo_res.wave_points,
         direction=direction,
@@ -430,8 +464,8 @@ def scan_live_pair(
         direction=direction,
         symbol=symbol,
         interval=interval,
-        rsi_ob=rsi_ob,
-        rsi_os=rsi_os,
+        rsi_ob=70.0,
+        rsi_os=30.0,
         swept_price=p1_price,
         lookback=min(n - 1, LOOKBACK_CANDLES),
         wave_points=algo_res.wave_points,
@@ -448,11 +482,12 @@ def scan_live_pair(
         trade_plan=trade_plan,
     )
 
-    # 4. Аудит через Vision AI (Gemini / OpenRouter / Groq)
-    if dry_run:
+    # 4. Аудит: если Vision AI отключен (ENABLE_VISION_FILTER=False), пропускаем сразу
+    from config import ENABLE_VISION_FILTER
+    if dry_run or not ENABLE_VISION_FILTER:
         score = int(algo_res.score)
         passed = True
-        reason = f"LIVE DRY RUN: {algo_res.reason}"
+        reason = f"Organic Elliott Impulse (Score: {score})"
         analysis = {
             "passed": True, "score": score, "reason": reason, "provider": "algo_only",
             "wave_direction": algo_res.wave_direction,
@@ -473,12 +508,8 @@ def scan_live_pair(
         passed = vision_res["passed"]
         reason = vision_res["reason"]
 
-        # Уважаем вердикт Vision AI: если нейросеть отклонила сигнал (Score < MIN_VISION_CONFIRM_SCORE), сделка бракуется!
         if not passed:
-            if vision_res.get("provider") == "fallback":
-                logger.warning(f"⚠️ Все Vision API офлайн для {symbol} {interval} {direction}. Сигнал отклонён в целях безопасности депозита.")
-            else:
-                logger.info(f"🚫 Vision AI ({vision_res.get('provider')}) отклонил сигнал: {symbol} {interval} {direction} (Score: {score}, Reason: {reason})")
+            logger.info(f"🚫 Vision AI отклонил сигнал: {symbol} {interval} {direction} (Score: {score})")
 
         analysis = {
             "passed": passed, "score": score, "reason": reason,

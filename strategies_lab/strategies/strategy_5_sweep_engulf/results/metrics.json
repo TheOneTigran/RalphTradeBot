@@ -1,0 +1,51 @@
+{
+  "strategy_name": "Strategy_5_Sweep_Engulf",
+  "total_signals": 184,
+  "executed_trades": 5,
+  "filtered_signals": 179,
+  "wins": 4,
+  "losses": 1,
+  "breakevens": 0,
+  "win_rate_pct": 80.0,
+  "full_win_rate_pct": 80.0,
+  "profit_factor": 6.85,
+  "total_net_pnl_pct": 8.92,
+  "initial_deposit_usd": 1000.0,
+  "final_deposit_usd": 1089.16,
+  "net_profit_usd": 89.16,
+  "total_fees_usd": 20.84,
+  "expectancy_r": 1.78,
+  "max_drawdown_pct": 1.38,
+  "sharpe_ratio": 16.88,
+  "sortino_ratio": 28.26,
+  "avg_mfe_pct": 1.47,
+  "avg_mae_pct": 0.15,
+  "avg_mfe_r": 3.37,
+  "avg_mae_r": 0.53,
+  "avg_bars_held": 3.6,
+  "avg_slippage_tax_pct": 0.0,
+  "losses_saved_vs_baseline": 60,
+  "mfe_mae_analysis": {
+    "total_analyzed": 5,
+    "winners_count": 4,
+    "losers_count": 1,
+    "win_mae_percentiles_r": {
+      "p50_median": 0.45,
+      "p75": 0.49,
+      "p90": 0.54,
+      "p95": 0.55
+    },
+    "all_mfe_percentiles_r": {
+      "p25": 3.41,
+      "p50_median": 3.43,
+      "p75": 3.71,
+      "p90": 4.11
+    },
+    "mfe_reach_rates_pct": {
+      "reached_1r_pct": 100.0,
+      "reached_2r_pct": 80.0,
+      "reached_3r_pct": 80.0,
+      "reached_4r_pct": 20.0
+    }
+  }
+}
