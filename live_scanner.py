@@ -589,6 +589,9 @@ def scan_live_pair(
             logger.info(f"🚀 СИГНАЛ УСПЕШНО ОТПРАВЛЕН В ТЕЛЕГРАМ: {symbol} {interval} {direction} (Score: {score}, MsgID: {tg_msg_id})")
         else:
             logger.error(f"❌ Ошибка отправки сигнала в Telegram: {symbol} {interval}")
+            is_active_trade = False
+    elif send_tg:
+        is_active_trade = False
 
     # 7. Сохранение сигнала в SQLite базу аналитики
     # detection_ts — Unix timestamp реальной отправки (для Fail-Fast отсчёта)

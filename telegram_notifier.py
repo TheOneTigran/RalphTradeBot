@@ -159,10 +159,19 @@ import time
 
 _tg_lock = threading.Lock()
 
-def _send_tg_request(method_url: str, is_json: bool = False, retry_count: int = 3, **kwargs) -> Optional[requests.Response]:
+def _send_tg_request(method_url: str, is_json: bool = False, retry_count: int = 4, **kwargs) -> Optional[requests.Response]:
     """Вспомогательная функция для отправки запросов в Telegram с защитой от флуда и повторами."""
     for attempt in range(retry_count):
         try:
+            # Перематываем файловые потоки (BytesIO) в начало перед каждой попыткой отправки,
+            # чтобы при повторной отправке после таймаута файл не оказывался пустым (HTTP 400: file must be non-empty)
+            if "files" in kwargs and kwargs["files"]:
+                for k, v in kwargs["files"].items():
+                    if isinstance(v, (tuple, list)) and len(v) >= 2 and hasattr(v[1], "seek"):
+                        v[1].seek(0)
+                    elif hasattr(v, "seek"):
+                        v.seek(0)
+
             if is_json:
                 resp = requests.post(method_url, json=kwargs.get("json"), timeout=kwargs.get("timeout", 20))
             else:
