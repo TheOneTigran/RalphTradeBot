@@ -33,6 +33,9 @@ from runtime_settings import (
     add_symbol,
     remove_symbol,
     reset_symbols_to_default,
+    search_exchange_symbols,
+    get_portfolio_display_symbols,
+    normalize_ticker_input,
     toggle_timeframe,
     set_deposit,
     set_risk_usd,
@@ -88,6 +91,7 @@ class TelegramUIController:
         self.session.headers.update({"User-Agent": "RalphTradeBot-UI/2.3"})
         self.running = False
         self.last_update_id = 0
+        self.user_states: Dict[int | str, str] = {}
         self._thread: Optional[threading.Thread] = None
         self.setup_bot_commands()
 
@@ -97,7 +101,8 @@ class TelegramUIController:
             {"command": "menu", "description": "🏠 Главный терминал управления"},
             {"command": "stats", "description": "📊 Полная статистика PnL и Win Rate"},
             {"command": "trades", "description": "🎯 Активные сделки в трекере"},
-            {"command": "coins", "description": "🪙 Управление монетами (вкл/выкл)"},
+            {"command": "coins", "description": "🪙 Управление портфелем монет"},
+            {"command": "search", "description": "🔍 Найти по тикеру (добавить/убрать)"},
             {"command": "tf", "description": "⏱ Таймфреймы (15m, 1h, 5m, 4h)"},
             {"command": "settings", "description": "⚙️ Депозит, риск и плечо"},
             {"command": "reset", "description": "🗑 Сбросить историю и статистику"},
@@ -396,22 +401,33 @@ class TelegramUIController:
 
     def render_coins_screen(self) -> Tuple[str, Dict[str, Any]]:
         cfg = get_runtime_config()
-        active = set(cfg["active_symbols"])
+        active_list = list(cfg["active_symbols"])
+        active = set(active_list)
+        display_symbols = get_portfolio_display_symbols()
+
+        active_short = ", ".join(s.replace("USDT", "") for s in active_list)
 
         text = (
-            f"🪙 <b>УПРАВЛЕНИЕ МОНЕТАМИ СКАНЕРА</b>\n"
+            f"🪙 <b>УПРАВЛЕНИЕ ПОРТФЕЛЕМ ИНСТРУМЕНТОВ</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"Всего в активном пуле: <b>{len(active)} монет</b>\n"
-            f"🟢 — монета сканируется в реальном времени\n"
-            f"⚪ — монета отключена (нажмите, чтобы включить)\n\n"
-            f"<i>Нажмите на монету для мгновенного переключения (ON/OFF) или отправьте команду:</i>\n"
-            f"• <code>/add SOLUSDT</code> — добавить любую пару\n"
-            f"• <code>/del NEARUSDT</code> — удалить пару\n"
+            f"Всего в активном портфеле: <b>{len(active)} монет</b>\n"
+            f"📋 <b>В анализе:</b> <code>{active_short}</code>\n\n"
+            f"🟢 — инструмент анализируется сканером в реальном времени\n"
+            f"⚪ — инструмент отключен (нажмите, чтобы добавить в портфель)\n\n"
+            f"💡 <b>Как найти любой тикер:</b>\n"
+            f"Нажмите кнопку <b>«🔍 Найти по тикеру (Добавить / Убрать)»</b> ниже или используйте команды:\n"
+            f"• <code>/search TON</code> — найти по тикеру на бирже\n"
+            f"• <code>/add SOLUSDT</code> — добавить инструмент в портфель\n"
+            f"• <code>/del NEARUSDT</code> — убрать инструмент из портфеля\n"
         )
 
-        buttons = []
+        buttons = [
+            [
+                {"text": "🔍 Найти по тикеру (Добавить / Убрать)", "callback_data": "screen:search_coin"},
+            ]
+        ]
         row = []
-        for sym in POPULAR_COINS:
+        for sym in display_symbols:
             short_name = sym.replace("USDT", "")
             icon = "🟢" if sym in active else "⚪"
             btn_text = f"{icon} {short_name}"
@@ -431,6 +447,105 @@ class TelegramUIController:
         ])
 
         return text, {"inline_keyboard": buttons}
+
+    def render_search_coin_screen(self) -> Tuple[str, Dict[str, Any]]:
+        cfg = get_runtime_config()
+        active_list = list(cfg["active_symbols"])
+
+        text = (
+            f"🔍 <b>ПОИСК ИНСТРУМЕНТОВ ПО ТИКЕРУ</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"✍️ <b>Просто отправьте тикер или часть названия в чат</b> (без слэша):\n"
+            f"Например: <code>SOL</code>, <code>ARB</code>, <code>TON</code>, <code>PEPE</code>, <code>LINK</code>, <code>WIF</code>, <code>XRP</code>\n\n"
+            f"Бот мгновенно найдёт подходящие фьючерсные пары (Binance / Bybit), покажет текущую цену и даст кнопки:\n"
+            f"• <b>➕ Добавить в портфель</b> — включить анализ по инструменту\n"
+            f"• <b>🗑 Убрать из портфеля</b> — исключить инструмент из анализа\n\n"
+            f"🪙 <i>Сейчас в портфеле: <b>{len(active_list)} инструментов</b></i>"
+        )
+
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "🔥 Топ: BTC / ETH / SOL", "callback_data": "quick_search:BTC"},
+                    {"text": "🚀 Мемы: PEPE / DOGE / WIF", "callback_data": "quick_search:PEPE"},
+                ],
+                [
+                    {"text": "⚡ L1/L2: SUI / APT / ARB", "callback_data": "quick_search:ARB"},
+                    {"text": "🤖 AI: FET / TAO / RENDER", "callback_data": "quick_search:FET"},
+                ],
+                [
+                    {"text": f"🪙 К портфелю монет ({len(active_list)})", "callback_data": "screen:coins"},
+                    {"text": "🔙 В главное меню", "callback_data": "screen:main"},
+                ],
+            ]
+        }
+        return text, keyboard
+
+    def render_search_results_screen(self, query: str) -> Tuple[str, Dict[str, Any]]:
+        clean_q = normalize_ticker_input(query)[:16]
+        matches = search_exchange_symbols(clean_q, limit=8)
+        cfg = get_runtime_config()
+        active_count = len(cfg["active_symbols"])
+
+        if not matches:
+            text = (
+                f"🔍 <b>Поиск по тикеру:</b> <code>{_esc(query)}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"❌ По запросу <b>{_esc(query)}</b> инструментов не найдено.\n\n"
+                f"Попробуйте ввести другой тикер (например: <code>SOL</code>, <code>TON</code>, <code>ARB</code>, <code>PEPE</code>, <code>AVAX</code>) "
+                f"или добавьте пару напрямую командой <code>/add ТИКЕР</code>."
+            )
+            keyboard = {
+                "inline_keyboard": [
+                    [{"text": "🔎 Попробовать другой поиск", "callback_data": "screen:search_coin"}],
+                    [
+                        {"text": f"🪙 Портфель ({active_count})", "callback_data": "screen:coins"},
+                        {"text": "🔙 В меню", "callback_data": "screen:main"},
+                    ],
+                ]
+            }
+            return text, keyboard
+
+        lines = [
+            f"🔍 <b>РЕЗУЛЬТАТЫ ПОИСКА ПО ТИКЕРУ:</b> <code>{_esc(clean_q)}</code>",
+            f"━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"Найдено инструментов: <b>{len(matches)}</b> (Всего в портфеле: <b>{active_count}</b>)\n",
+        ]
+
+        buttons = []
+        for item in matches:
+            sym = item["symbol"]
+            in_port = item["in_portfolio"]
+            price = item.get("price", 0.0)
+            chg = item.get("change_24h", 0.0)
+            status_str = "🟢 <b>В портфеле</b>" if in_port else "⚪ <i>Не в портфеле</i>"
+            price_str = f" │ <b>{_fmt_price(price)}</b> ({chg:+.1f}%)" if price > 0 else ""
+
+            lines.append(f"• <code>{sym}</code>{price_str} — {status_str}")
+
+            if in_port:
+                btn_label = f"🗑 Убрать {sym} из портфеля (🟢 В пуле)"
+            else:
+                btn_label = f"➕ Добавить {sym} в портфель"
+
+            buttons.append([
+                {"text": btn_label, "callback_data": f"s_tog:{sym}:{clean_q}"}
+            ])
+
+        lines.append(
+            "\n<i>Нажмите на кнопку ниже, чтобы мгновенно добавить или убрать инструмент из портфеля анализа, "
+            "или отправьте в чат следующий тикер для поиска:</i>"
+        )
+
+        buttons.append([
+            {"text": "🔎 Новый поиск", "callback_data": "screen:search_coin"},
+            {"text": f"🪙 Портфель ({active_count})", "callback_data": "screen:coins"},
+        ])
+        buttons.append([
+            {"text": "🔙 В главное меню", "callback_data": "screen:main"},
+        ])
+
+        return "\n".join(lines), {"inline_keyboard": buttons}
 
     def render_timeframes_screen(self) -> Tuple[str, Dict[str, Any]]:
         cfg = get_runtime_config()
@@ -614,20 +729,44 @@ class TelegramUIController:
         toast_msg = None
 
         if data == "screen:main":
+            self.user_states.pop(chat_id, None)
             text, kb = self.render_main_menu()
             self.edit_message(chat_id, msg_id, text, kb)
 
         elif data.startswith("screen:stats:"):
+            self.user_states.pop(chat_id, None)
             period = data.split(":")[-1]
             text, kb = self.render_stats_screen(period)
             self.edit_message(chat_id, msg_id, text, kb)
 
         elif data == "screen:trades":
+            self.user_states.pop(chat_id, None)
             text, kb = self.render_active_trades_screen()
             self.edit_message(chat_id, msg_id, text, kb)
 
         elif data == "screen:coins":
+            self.user_states.pop(chat_id, None)
             text, kb = self.render_coins_screen()
+            self.edit_message(chat_id, msg_id, text, kb)
+
+        elif data == "screen:search_coin":
+            self.user_states[chat_id] = "awaiting_ticker_search"
+            text, kb = self.render_search_coin_screen()
+            self.edit_message(chat_id, msg_id, text, kb)
+
+        elif data.startswith("quick_search:"):
+            q = data.split(":", 1)[1]
+            self.user_states[chat_id] = "awaiting_ticker_search"
+            text, kb = self.render_search_results_screen(q)
+            self.edit_message(chat_id, msg_id, text, kb)
+
+        elif data.startswith("s_tog:"):
+            parts = data.split(":", 2)
+            sym = parts[1] if len(parts) > 1 else ""
+            q = parts[2] if len(parts) > 2 else sym
+            self.user_states[chat_id] = "awaiting_ticker_search"
+            is_active, toast_msg = toggle_symbol(sym)
+            text, kb = self.render_search_results_screen(q)
             self.edit_message(chat_id, msg_id, text, kb)
 
         elif data.startswith("toggle_coin:"):
@@ -643,6 +782,7 @@ class TelegramUIController:
             self.edit_message(chat_id, msg_id, text, kb)
 
         elif data == "screen:tf":
+            self.user_states.pop(chat_id, None)
             text, kb = self.render_timeframes_screen()
             self.edit_message(chat_id, msg_id, text, kb)
 
@@ -653,6 +793,7 @@ class TelegramUIController:
             self.edit_message(chat_id, msg_id, text, kb)
 
         elif data == "screen:settings":
+            self.user_states.pop(chat_id, None)
             text, kb = self.render_settings_screen()
             self.edit_message(chat_id, msg_id, text, kb)
 
@@ -702,6 +843,7 @@ class TelegramUIController:
             self.edit_message(chat_id, msg_id, text, kb)
 
         elif data == "screen:night":
+            self.user_states.pop(chat_id, None)
             text, kb = self.render_night_mode_screen()
             self.edit_message(chat_id, msg_id, text, kb)
 
@@ -744,20 +886,27 @@ class TelegramUIController:
             return
 
         cmd = text.split()[0].lower() if text else ""
+        # Убираем суффикс @botname если команда отправлена в группе
+        if "@" in cmd and cmd.startswith("/"):
+            cmd = cmd.split("@", 1)[0]
 
         if cmd in ("/start", "/menu", "меню", "start"):
+            self.user_states.pop(chat_id, None)
             msg_text, kb = self.render_main_menu()
             self.send_message(chat_id, msg_text, kb)
 
         elif cmd in ("/stats", "/pnl", "статистика"):
+            self.user_states.pop(chat_id, None)
             msg_text, kb = self.render_stats_screen("all")
             self.send_message(chat_id, msg_text, kb)
 
         elif cmd in ("/trades", "/positions", "сделки"):
+            self.user_states.pop(chat_id, None)
             msg_text, kb = self.render_active_trades_screen()
             self.send_message(chat_id, msg_text, kb)
 
         elif cmd in ("/night", "/quiet", "ночь"):
+            self.user_states.pop(chat_id, None)
             parts = text.split()
             if len(parts) >= 3 and parts[1].isdigit() and parts[2].isdigit():
                 s_h, e_h = int(parts[1]), int(parts[2])
@@ -773,19 +922,33 @@ class TelegramUIController:
                 msg_text, kb = self.render_night_mode_screen()
                 self.send_message(chat_id, msg_text, kb)
 
-        elif cmd in ("/coins", "/symbols", "монеты"):
+        elif cmd in ("/coins", "/symbols", "/portfolio", "монеты", "портфель"):
+            self.user_states.pop(chat_id, None)
             msg_text, kb = self.render_coins_screen()
             self.send_message(chat_id, msg_text, kb)
 
+        elif cmd in ("/search", "/find", "поиск", "найти"):
+            parts = text.split(maxsplit=1)
+            self.user_states[chat_id] = "awaiting_ticker_search"
+            if len(parts) >= 2 and parts[1].strip():
+                msg_text, kb = self.render_search_results_screen(parts[1].strip())
+                self.send_message(chat_id, msg_text, kb)
+            else:
+                msg_text, kb = self.render_search_coin_screen()
+                self.send_message(chat_id, msg_text, kb)
+
         elif cmd in ("/tf", "/timeframes", "таймфреймы"):
+            self.user_states.pop(chat_id, None)
             msg_text, kb = self.render_timeframes_screen()
             self.send_message(chat_id, msg_text, kb)
 
         elif cmd in ("/settings", "/risk", "настройки"):
+            self.user_states.pop(chat_id, None)
             msg_text, kb = self.render_settings_screen()
             self.send_message(chat_id, msg_text, kb)
 
         elif cmd in ("/reset_stats", "/clear_stats", "/reset", "сброс"):
+            self.user_states.pop(chat_id, None)
             msg_text, kb = self.render_confirm_reset_screen()
             self.send_message(chat_id, msg_text, kb)
 
@@ -793,17 +956,35 @@ class TelegramUIController:
             parts = text.split()
             if len(parts) >= 2:
                 ok, note = add_symbol(parts[1])
-                self.send_message(chat_id, note)
+                kb = {
+                    "inline_keyboard": [
+                        [
+                            {"text": "🪙 Открыть портфель", "callback_data": "screen:coins"},
+                            {"text": "🔍 Поиск по тикеру", "callback_data": "screen:search_coin"},
+                        ]
+                    ]
+                }
+                self.send_message(chat_id, note, kb)
             else:
-                self.send_message(chat_id, "⚠️ Использование: <code>/add SOLUSDT</code>")
+                self.user_states[chat_id] = "awaiting_ticker_search"
+                msg_text, kb = self.render_search_coin_screen()
+                self.send_message(chat_id, msg_text, kb)
 
         elif cmd in ("/del", "/remove"):
             parts = text.split()
             if len(parts) >= 2:
                 ok, note = remove_symbol(parts[1])
-                self.send_message(chat_id, note)
+                kb = {
+                    "inline_keyboard": [
+                        [
+                            {"text": "🪙 Открыть портфель", "callback_data": "screen:coins"},
+                            {"text": "🔍 Поиск по тикеру", "callback_data": "screen:search_coin"},
+                        ]
+                    ]
+                }
+                self.send_message(chat_id, note, kb)
             else:
-                self.send_message(chat_id, "⚠️ Использование: <code>/del SOLUSDT</code>")
+                self.send_message(chat_id, "⚠️ Использование: <code>/del SOLUSDT</code> (или через меню /coins)")
 
         elif cmd in ("/set_dep", "/dep", "/deposit"):
             parts = text.split()
@@ -851,21 +1032,28 @@ class TelegramUIController:
                 self.send_message(chat_id, "⚠️ Использование: <code>/set_score 85</code>")
 
         elif cmd in ("/help", "помощь"):
+            self.user_states.pop(chat_id, None)
             help_text = (
                 f"📖 <b>Команды управления RalphTradeBot:</b>\n\n"
                 f"• <code>/menu</code> — Главный дашборд управления\n"
                 f"• <code>/stats</code> — Полная статистика PnL и Win Rate\n"
                 f"• <code>/trades</code> — Текущие открытые позиции\n"
-                f"• <code>/coins</code> — Меню переключения монет\n"
+                f"• <code>/coins</code> — Управление портфелем монет\n"
+                f"• <code>/search TON</code> — Найти инструмент по тикеру (добавить/убрать)\n"
                 f"• <code>/tf</code> — Выбор таймфреймов (15m, 1h, 5m, 4h)\n"
                 f"• <code>/settings</code> — Настройки депо и плеча\n"
-                f"• <code>/add BTCUSDT</code> — Добавить монету в пул\n"
-                f"• <code>/del BTCUSDT</code> — Удалить монету из пула\n"
+                f"• <code>/add BTCUSDT</code> — Добавить инструмент в портфель\n"
+                f"• <code>/del BTCUSDT</code> — Убрать инструмент из портфеля\n"
                 f"• <code>/set_dep 2000</code> — Задать размер депозита ($)\n"
                 f"• <code>/set_risk 25</code> — Задать риск на сделку ($)\n"
                 f"• <code>/set_lev 10</code> — Задать кредитное плечо\n"
             )
             self.send_message(chat_id, help_text)
+
+        elif not text.startswith("/") and self.user_states.get(chat_id) == "awaiting_ticker_search":
+            # Пользователь находится в режиме поиска по тикеру и отправил название/тикер
+            msg_text, kb = self.render_search_results_screen(text)
+            self.send_message(chat_id, msg_text, kb)
 
     # ═══════════════════════════════════════════════════════════════════════════
     # Long Polling цикл

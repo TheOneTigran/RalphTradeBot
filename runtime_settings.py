@@ -152,51 +152,274 @@ def get_runtime_config(db_path: Path | str = ANALYTICS_DB_PATH) -> Dict[str, Any
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Управление монетами
+# Управление монетами и поиск по тикеру (Binance Futures / Bybit)
 # ═══════════════════════════════════════════════════════════════════════════
 
+POPULAR_COINS_DEFAULT = [
+    "NEARUSDT", "SUIUSDT", "KASUSDT", "DOGEUSDT",
+    "UNIUSDT", "APTUSDT", "OPUSDT", "1000PEPEUSDT",
+    "LTCUSDT", "BCHUSDT", "TAOUSDT", "ICPUSDT",
+    "SOLUSDT", "ETHUSDT", "BTCUSDT", "AVAXUSDT",
+]
+
+FALLBACK_EXCHANGE_SYMBOLS = list(dict.fromkeys(
+    list(TOP_30_SYMBOLS) + POPULAR_COINS_DEFAULT + [
+        "TONUSDT", "WIFUSDT", "ONDOUSDT", "TIAUSDT", "SEIUSDT",
+        "ORDIUSDT", "JUPUSDT", "ENAUSDT", "PENDLEUSDT", "FILUSDT",
+        "ATOMUSDT", "HBARUSDT", "STXUSDT", "IMXUSDT", "MKRUSDT",
+        "LDOUSDT", "RUNEUSDT", "GRTUSDT", "ALGOUSDT", "SANDUSDT",
+        "MANAUSDT", "AXSUSDT", "APEUSDT", "GALAUSDT", "DYDXUSDT",
+        "1000BONKUSDT", "1000FLOKIUSDT", "NOTUSDT", "EIGENUSDT", "ZROUSDT",
+        "STRKUSDT", "ZKUSDT", "PYTHUSDT", "JTOUSDT", "WLDUSDT",
+        "ARKMUSDT", "JASMYUSDT", "ENSUSDT", "CRVUSDT", "SNXUSDT",
+        "COMPUSDT", "VETUSDT", "EGLDUSDT", "FLOWUSDT", "THETAUSDT",
+        "EOSUSDT", "XTZUSDT", "NEOUSDT", "KAVAUSDT", "MINAUSDT",
+        "CHZUSDT", "ZILUSDT", "ENJUSDT", "1INCHUSDT", "SUSHIUSDT",
+    ]
+))
+
+_exchange_tickers_cache: List[Dict[str, Any]] = []
+_exchange_tickers_ts: float = 0.0
+EXCHANGE_CACHE_TTL_SEC: float = 120.0
+
+
+def normalize_ticker_input(raw: str) -> str:
+    """Нормализует пользовательский ввод тикера (например, 'sol/usdt' -> 'SOLUSDT')."""
+    s = (raw or "").strip().upper()
+    for ch in ("/", "-", "_", " ", ":"):
+        s = s.replace(ch, "")
+    return s
+
+
+def _fetch_exchange_tickers_cached() -> List[Dict[str, Any]]:
+    """
+    Загружает и кэширует список всех USDT-фьючерсов с актуальными ценами и объёмами
+    с Binance Futures (фоллбэк на Bybit Linear и локальный список).
+    """
+    global _exchange_tickers_cache, _exchange_tickers_ts
+    import time
+    import requests
+
+    now = time.time()
+    if _exchange_tickers_cache and (now - _exchange_tickers_ts) < EXCHANGE_CACHE_TTL_SEC:
+        return _exchange_tickers_cache
+
+    headers = {"User-Agent": "RalphTradeBot-TickerSearch/2.3"}
+    results: List[Dict[str, Any]] = []
+
+    # 1. Попытка через Binance Futures 24hr ticker
+    try:
+        resp = requests.get("https://fapi.binance.com/fapi/v1/ticker/24hr", headers=headers, timeout=6)
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, list):
+                for item in data:
+                    sym = str(item.get("symbol", ""))
+                    if not sym.endswith("USDT") or "_" in sym:
+                        continue
+                    price = float(item.get("lastPrice") or 0.0)
+                    if price <= 0:
+                        continue
+                    results.append({
+                        "symbol": sym,
+                        "base": sym[:-4],
+                        "price": price,
+                        "change_24h": float(item.get("priceChangePercent") or 0.0),
+                        "vol_24h": float(item.get("quoteVolume") or 0.0),
+                        "source": "Binance",
+                    })
+    except Exception as e:
+        logger.debug(f"Binance ticker search fetch error: {e}")
+
+    # 2. Фоллбэк через Bybit Linear
+    if not results:
+        try:
+            resp_b = requests.get(
+                "https://api.bybit.com/v5/market/tickers?category=linear",
+                headers=headers,
+                timeout=6,
+            )
+            if resp_b.status_code == 200:
+                b_data = resp_b.json()
+                rows = b_data.get("result", {}).get("list", [])
+                for item in rows:
+                    sym = str(item.get("symbol", ""))
+                    if not sym.endswith("USDT"):
+                        continue
+                    price = float(item.get("lastPrice") or 0.0)
+                    if price <= 0:
+                        continue
+                    results.append({
+                        "symbol": sym,
+                        "base": sym[:-4],
+                        "price": price,
+                        "change_24h": float(item.get("price24hPcnt") or 0.0) * 100.0,
+                        "vol_24h": float(item.get("turnover24h") or 0.0),
+                        "source": "Bybit",
+                    })
+        except Exception as e:
+            logger.debug(f"Bybit ticker search fetch error: {e}")
+
+    # 3. Локальный фоллбэк, если сеть недоступна
+    if not results:
+        for sym in FALLBACK_EXCHANGE_SYMBOLS:
+            results.append({
+                "symbol": sym,
+                "base": sym[:-4] if sym.endswith("USDT") else sym,
+                "price": 0.0,
+                "change_24h": 0.0,
+                "vol_24h": 0.0,
+                "source": "Preset",
+            })
+
+    if results:
+        _exchange_tickers_cache = results
+        _exchange_tickers_ts = now
+    return results
+
+
+def search_exchange_symbols(
+    query: str,
+    limit: int = 8,
+    db_path: Path | str = ANALYTICS_DB_PATH,
+) -> List[Dict[str, Any]]:
+    """
+    Ищет инструменты по тикеру (или части тикера) на бирже и проверяет,
+    находятся ли они уже в активном портфеле бота.
+    """
+    q = normalize_ticker_input(query)
+    if not q:
+        return []
+
+    q_base = q[:-4] if q.endswith("USDT") and len(q) > 4 else q
+    q_full = q if q.endswith("USDT") else f"{q}USDT"
+
+    cfg = get_runtime_config(db_path=db_path)
+    active_set = set(cfg["active_symbols"])
+
+    tickers = _fetch_exchange_tickers_cached()
+    scored: List[Tuple[int, float, Dict[str, Any]]] = []
+
+    for item in tickers:
+        sym = item["symbol"]
+        base = item["base"]
+        base_no_1000 = base[4:] if base.startswith("1000") else base
+
+        if sym == q_full or base == q_base or base_no_1000 == q_base:
+            rank = 0
+        elif base.startswith(q_base) or base_no_1000.startswith(q_base):
+            rank = 1
+        elif q_base in base or q in sym:
+            rank = 2
+        else:
+            continue
+
+        entry = dict(item)
+        entry["in_portfolio"] = sym in active_set
+        scored.append((rank, -float(item.get("vol_24h", 0.0)), entry))
+
+    scored.sort(key=lambda x: (x[0], x[1], x[2]["symbol"]))
+    return [x[2] for x in scored[:limit]]
+
+
+def get_portfolio_display_symbols(db_path: Path | str = ANALYTICS_DB_PATH) -> List[str]:
+    """
+    Возвращает полный список монет для отображения в меню портфеля:
+    базовые популярные монеты + все пользовательские добавленные монеты + активные монеты.
+    """
+    cfg = get_runtime_config(db_path=db_path)
+    active = list(cfg["active_symbols"])
+    custom = get_raw_setting("custom_symbols", [], db_path=db_path)
+    if not isinstance(custom, list):
+        custom = []
+
+    combined: List[str] = []
+    for sym in POPULAR_COINS_DEFAULT + custom + active:
+        if sym and sym not in combined:
+            combined.append(sym)
+    return combined
+
+
 def add_symbol(symbol: str, db_path: Path | str = ANALYTICS_DB_PATH) -> Tuple[bool, str]:
-    """Добавляет монету в активный пул сканирования."""
-    sym = symbol.strip().upper()
-    if not sym.endswith("USDT"):
-        sym += "USDT"
+    """Добавляет монету в активный пул сканирования (с умным разрешением тикера)."""
+    sym = normalize_ticker_input(symbol)
+    if not sym:
+        return False, "⚠️ Укажите корректный тикер монеты (например: <code>SOL</code> или <code>SOLUSDT</code>)."
+
+    # Проверяем по биржевому списку для точного совпадения (например PEPE -> 1000PEPEUSDT)
+    matches = search_exchange_symbols(sym, limit=5, db_path=db_path)
+    q_base = sym[:-4] if sym.endswith("USDT") and len(sym) > 4 else sym
+    resolved_sym = sym if sym.endswith("USDT") else f"{sym}USDT"
+
+    if matches:
+        exact = [
+            m["symbol"]
+            for m in matches
+            if m["symbol"] == resolved_sym
+            or m["base"] == q_base
+            or (m["base"].startswith("1000") and m["base"][4:] == q_base)
+        ]
+        if exact:
+            resolved_sym = exact[0]
 
     cfg = get_runtime_config(db_path=db_path)
     current_symbols = list(cfg["active_symbols"])
 
-    if sym in current_symbols:
-        return False, f"Монета <b>{sym}</b> уже находится в списке мониторинга."
+    if resolved_sym in current_symbols:
+        return False, f"ℹ️ Инструмент <b>{resolved_sym}</b> уже находится в портфеле анализа."
 
-    current_symbols.append(sym)
+    current_symbols.append(resolved_sym)
     set_raw_setting("active_symbols", current_symbols, db_path=db_path)
-    logger.info(f"Добавлена новая монета в пул: {sym} (всего: {len(current_symbols)})")
-    return True, f"✅ Монета <b>{sym}</b> успешно добавлена в мониторинг!"
+
+    # Сохраняем в список пользовательских монет, чтобы кнопка отображалась в меню портфеля
+    custom = get_raw_setting("custom_symbols", [], db_path=db_path)
+    if not isinstance(custom, list):
+        custom = []
+    if resolved_sym not in POPULAR_COINS_DEFAULT and resolved_sym not in custom:
+        custom.append(resolved_sym)
+        set_raw_setting("custom_symbols", custom, db_path=db_path)
+
+    logger.info(f"Добавлена новая монета в пул: {resolved_sym} (всего: {len(current_symbols)})")
+    return True, f"✅ Инструмент <b>{resolved_sym}</b> добавлен в портфель для анализа! (Всего в пуле: <b>{len(current_symbols)}</b>)"
 
 
 def remove_symbol(symbol: str, db_path: Path | str = ANALYTICS_DB_PATH) -> Tuple[bool, str]:
-    """Удаляет монету из пула сканирования."""
-    sym = symbol.strip().upper()
+    """Удаляет монету из активного портфеля сканирования."""
+    sym = normalize_ticker_input(symbol)
     if not sym.endswith("USDT"):
         sym += "USDT"
 
     cfg = get_runtime_config(db_path=db_path)
     current_symbols = list(cfg["active_symbols"])
 
+    # Если ввели PEPE, а в пуле 1000PEPEUSDT
     if sym not in current_symbols:
-        return False, f"Монета <b>{sym}</b> отсутствует в активном списке."
+        alt_sym = f"1000{sym}"
+        if alt_sym in current_symbols:
+            sym = alt_sym
+
+    if sym not in current_symbols:
+        return False, f"ℹ️ Инструмент <b>{sym}</b> сейчас не находится в активном портфеле."
 
     if len(current_symbols) <= 1:
-        return False, "⚠️ Нельзя удалить последнюю монету. В списке должен оставаться хотя бы 1 актив."
+        return False, "⚠️ Нельзя убрать последнюю монету. В портфеле должен оставаться хотя бы 1 инструмент."
 
     current_symbols.remove(sym)
     set_raw_setting("active_symbols", current_symbols, db_path=db_path)
+
+    # Если это кастомная монета — убираем также из custom_symbols
+    custom = get_raw_setting("custom_symbols", [], db_path=db_path)
+    if isinstance(custom, list) and sym in custom:
+        custom.remove(sym)
+        set_raw_setting("custom_symbols", custom, db_path=db_path)
+
     logger.info(f"Удалена монета из пула: {sym} (осталось: {len(current_symbols)})")
-    return True, f"🗑 Монета <b>{sym}</b> удалена из мониторинга."
+    return True, f"🗑 Инструмент <b>{sym}</b> убран из портфеля анализа. (Осталось: <b>{len(current_symbols)}</b>)"
 
 
 def toggle_symbol(symbol: str, db_path: Path | str = ANALYTICS_DB_PATH) -> Tuple[bool, str]:
     """Переключает статус монеты (включена / выключена)."""
-    sym = symbol.strip().upper()
+    sym = normalize_ticker_input(symbol)
     if not sym.endswith("USDT"):
         sym += "USDT"
 
@@ -208,17 +431,24 @@ def toggle_symbol(symbol: str, db_path: Path | str = ANALYTICS_DB_PATH) -> Tuple
             return False, "⚠️ Нельзя отключить последнюю активную пару."
         current_symbols.remove(sym)
         set_raw_setting("active_symbols", current_symbols, db_path=db_path)
-        return False, f"⚪ <b>{sym}</b> отключен"
+        return False, f"⚪ <b>{sym}</b> убран из портфеля"
     else:
         current_symbols.append(sym)
         set_raw_setting("active_symbols", current_symbols, db_path=db_path)
-        return True, f"🟢 <b>{sym}</b> включен"
+        custom = get_raw_setting("custom_symbols", [], db_path=db_path)
+        if not isinstance(custom, list):
+            custom = []
+        if sym not in POPULAR_COINS_DEFAULT and sym not in custom:
+            custom.append(sym)
+            set_raw_setting("custom_symbols", custom, db_path=db_path)
+        return True, f"🟢 <b>{sym}</b> добавлен в портфель"
 
 
 def reset_symbols_to_default(db_path: Path | str = ANALYTICS_DB_PATH) -> List[str]:
     """Сбрасывает список монет к эталонному ТОП-12."""
     default_list = list(TOP_12_LEADERS)
     set_raw_setting("active_symbols", default_list, db_path=db_path)
+    set_raw_setting("custom_symbols", [], db_path=db_path)
     logger.info("Список монет сброшен к рекомендованным ТОП-12")
     return default_list
 
