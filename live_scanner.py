@@ -50,6 +50,8 @@ from config import (
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
     RISK_BUDGET_USD, DEFAULT_LEVERAGE,
     ENABLE_VISION_FILTER,
+    PRE_CLOSE_SIGNAL_SEC, PRE_CLOSE_WINDOW_MIN_SEC,
+    PRE_CLOSE_WINDOW_MAX_SEC, POST_CLOSE_FALLBACK_SEC,
 )
 from elliott_detector import detect_elliott_impulse
 from chart_renderer import render_signal_chart, annotate_chart_with_analysis
@@ -189,13 +191,66 @@ def register_signal_dedup(
 
 
 
-def fetch_binance_klines(symbol: str, interval: str, limit: int = 150) -> Optional[pd.DataFrame]:
+def get_candle_timing_state(interval: str, now_ts: Optional[float] = None) -> Tuple[str, float]:
+    """
+    Определяет фазу текущей свечи для заданного таймфрейма:
+    - 'pre_close': до закрытия текущей свечи осталось от PRE_CLOSE_WINDOW_MIN_SEC до PRE_CLOSE_WINDOW_MAX_SEC секунд
+      (основное окно за 1 минуту до закрытия свечи для раннего обнаружения и ручного выставления лимитки).
+    - 'post_close': прошло не более POST_CLOSE_FALLBACK_SEC секунд с момента закрытия свечи (контрольный фоллбэк).
+    - 'idle': середина свечи, сканирование этого ТФ пропускается.
+    Возвращает (mode, seconds_to_close).
+    """
+    if now_ts is None:
+        now_ts = time.time()
+    tf_sec = TF_SECONDS_MAP.get(interval, 900)
+    elapsed_in_bar = now_ts % tf_sec
+    sec_to_close = tf_sec - elapsed_in_bar
+
+    if PRE_CLOSE_WINDOW_MIN_SEC <= sec_to_close <= PRE_CLOSE_WINDOW_MAX_SEC:
+        return "pre_close", sec_to_close
+    if elapsed_in_bar <= POST_CLOSE_FALLBACK_SEC:
+        return "post_close", 0.0
+    return "idle", sec_to_close
+
+
+def _compute_smart_sleep_sec(intervals: List[str], max_sleep: float = 25.0) -> float:
+    """
+    Рассчитывает точное время сна до ближайшего окна сканирования:
+    1) за 60 секунд до закрытия свечи (target elapsed = tf_sec - 59.5)
+    2) за 22 секунды до закрытия свечи (повторный скан внутри pre-close окна)
+    3) через 2 секунды после закрытия свечи (post-close fallback)
+    """
+    now_ts = time.time()
+    min_wait = max_sleep
+    for tf in intervals:
+        tf_sec = TF_SECONDS_MAP.get(tf, 900)
+        elapsed = now_ts % tf_sec
+        targets = [
+            tf_sec - float(PRE_CLOSE_SIGNAL_SEC) + 0.5,  # ровно за ~60с до закрытия
+            tf_sec - 22.0,                               # контрольный скан за 22с до закрытия
+            float(tf_sec) + 2.0,                         # контрольный скан через 2с после закрытия
+        ]
+        for t_target in targets:
+            wait = t_target - elapsed
+            if wait > 0.5:
+                min_wait = min(min_wait, wait)
+    return max(1.0, min(max_sleep, min_wait))
+
+
+def fetch_binance_klines(
+    symbol: str,
+    interval: str,
+    limit: int = 150,
+    include_forming: bool = False,
+) -> Optional[pd.DataFrame]:
     """
     Загружает исторические свечи через Binance Futures REST API.
     Фоллбэк на Bybit при ошибке.
+    Если include_forming=True, сохраняет последнюю (текущую формирующуюся) свечу
+    для генерации сигнала за 1 минуту до её закрытия.
     """
     url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    headers = {"User-Agent": "RalphTradeBot/2.1"}
+    headers = {"User-Agent": "RalphTradeBot/2.2"}
     
     try:
         resp = requests.get(url, headers=headers, timeout=10)
@@ -205,10 +260,12 @@ def fetch_binance_klines(symbol: str, interval: str, limit: int = 150) -> Option
                 return None
             
             # Binance: [0: open_time, 1: open, 2: high, 3: low, 4: close, 5: volume, 6: close_time, ...]
-            # Отбрасываем последнюю незакрытую свечу (она ещё формируется)
-            closed_candles = raw[:-1] if len(raw) > 1 else raw
+            if include_forming:
+                candles = raw
+            else:
+                candles = raw[:-1] if len(raw) > 1 else raw
             
-            df = pd.DataFrame(closed_candles, columns=[
+            df = pd.DataFrame(candles, columns=[
                 'open_time', 'open', 'high', 'low', 'close', 'volume',
                 'close_time', 'q_vol', 'trades', 'tb_base', 'tb_quote', 'ignore'
             ])
@@ -236,9 +293,12 @@ def fetch_binance_klines(symbol: str, interval: str, limit: int = 150) -> Option
                 if rows:
                     # Bybit возвращает в обратном порядке (новейшие первые)
                     rows.reverse()
-                    closed_candles = rows[:-1] if len(rows) > 1 else rows
+                    if include_forming:
+                        candles = rows
+                    else:
+                        candles = rows[:-1] if len(rows) > 1 else rows
                     # [0: startTime, 1: openPrice, 2: highPrice, 3: lowPrice, 4: closePrice, 5: volume, 6: turnover]
-                    df = pd.DataFrame(closed_candles, columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'turnover'])
+                    df = pd.DataFrame(candles, columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'turnover'])
                     df['open'] = df['open'].astype(float)
                     df['high'] = df['high'].astype(float)
                     df['low'] = df['low'].astype(float)
@@ -263,8 +323,19 @@ def scan_live_pair(
     """
     Сканирует одну связку (монета, таймфрейм) на появление свежей дивергенции
     и валидного 5-волнового импульса Эллиотта.
+    В боевом режиме сканирует за 1 минуту до закрытия текущей свечи (pre_close, include_forming=True)
+    с контрольным фоллбэком сразу после закрытия (post_close, include_forming=False).
     """
-    df = fetch_binance_klines(symbol, interval, limit=120)
+    if dry_run:
+        timing_mode, sec_to_close = "post_close", 0.0
+        include_forming = False
+    else:
+        timing_mode, sec_to_close = get_candle_timing_state(interval)
+        if timing_mode == "idle":
+            return None
+        include_forming = (timing_mode == "pre_close")
+
+    df = fetch_binance_klines(symbol, interval, limit=120, include_forming=include_forming)
     if df is None or len(df) < 50:
         return None
 
@@ -284,9 +355,10 @@ def scan_live_pair(
     high_pivots = argrelextrema(high, np.greater_equal, order=pivot_order)[0]
     low_pivots = argrelextrema(low, np.less_equal, order=pivot_order)[0]
 
-    # Проверяем свечи, закрывшиеся последними (n-1 и n-2)
+    # В боевом режиме проверяем строго текущую сигнальную свечу (n-1),
+    # чтобы исключить запоздалые сигналы со старых баров.
     latest_candles = [n - 1]
-    if n >= 2:
+    if dry_run and n >= 2:
         latest_candles.append(n - 2)
 
     candidates: List[Tuple[int, str, int, float, float, float, float, Any]] = []
@@ -301,6 +373,10 @@ def scan_live_pair(
 
         c_range = high[t] - low[t]
         if (c_range / close[t]) * 100.0 < 0.45:
+            continue
+        # Для SHORT лимитный вход находится на 50% ретрейсменте свечи вверх (low + 0.50 * range).
+        # Текущая цена закрытия медвежьей свечи поглощения должна быть ниже уровня 50%.
+        if close[t] > (low[t] + 0.50 * c_range):
             continue
         if vol[t] < 1.1 * vol_ma[t]:
             continue
@@ -353,6 +429,10 @@ def scan_live_pair(
 
         c_range = high[t] - low[t]
         if (c_range / close[t]) * 100.0 < 0.45:
+            continue
+        # Для LONG лимитный вход находится на 50% ретрейсменте свечи вниз (low + 0.50 * range).
+        # Текущая цена закрытия бычьей свечи поглощения должна быть выше уровня 50%.
+        if close[t] < (low[t] + 0.50 * c_range):
             continue
         if vol[t] < 1.1 * vol_ma[t]:
             continue
@@ -561,6 +641,7 @@ def scan_live_pair(
     sent_to_tg_flag = False
     sig_dt = df.index[p2].to_pydatetime() if isinstance(df.index, pd.DatetimeIndex) else datetime.now(timezone.utc)
     tg_msg_id = None
+    sec_to_close_int = int(round(sec_to_close)) if timing_mode == "pre_close" else 0
     if send_tg and passed and score >= min_score:
         tg_msg_id = send_signal_to_telegram(
             chart_png=annotated_png,
@@ -583,6 +664,7 @@ def scan_live_pair(
             w3_longest=algo_res.details.get("w3_longest", True),
             conflict_note=conflict_note,
             min_score=min_score,
+            sec_to_close=sec_to_close_int,
         )
         if tg_msg_id:
             sent_to_tg_flag = True
@@ -680,8 +762,8 @@ def run_scanner_loop(
 
     init_db()
 
-    # Запуск фонового трекера отработки активных сигналов (проверяет TP1-TP4 / BE / SL)
-    tracker_worker = OutcomeTrackerWorker(interval_sec=scan_interval_sec)
+    # Запуск фонового трекера отработки активных сигналов (высокоточный контроль по 1m свечам каждые 20 сек)
+    tracker_worker = OutcomeTrackerWorker(interval_sec=min(20, scan_interval_sec))
     tracker_worker.start()
 
     # Запуск интерактивного Telegram-бота управления и дашборда (UI)
@@ -708,7 +790,6 @@ def run_scanner_loop(
     scan_iteration = 0
 
     while running:
-        scan_iteration += 1
         t_start = time.time()
         found_signals = []
 
@@ -728,9 +809,35 @@ def run_scanner_loop(
 
         current_symbols = cfg.get("active_symbols", symbols)
         current_intervals = cfg.get("live_timeframes", intervals)
-        tasks = [(s, i) for s in current_symbols for i in current_intervals]
 
-        logger.info(f"\n🔄 [Итерация #{scan_iteration}] Сканирование {len(tasks)} пар ({len(current_symbols)} монет на {len(current_intervals)} ТФ)...")
+        # Выбираем таймфреймы, находящиеся в окне за 1 минуту до закрытия (pre_close) или сразу после закрытия (post_close)
+        active_tfs_info = []
+        active_intervals_now = []
+        for tf in current_intervals:
+            if dry_run:
+                active_intervals_now.append(tf)
+                active_tfs_info.append(f"{tf}(dry_run)")
+            else:
+                mode, s_left = get_candle_timing_state(tf)
+                if mode != "idle":
+                    active_intervals_now.append(tf)
+                    if mode == "pre_close":
+                        active_tfs_info.append(f"{tf}(за {int(round(s_left))}с до закр.)")
+                    else:
+                        active_tfs_info.append(f"{tf}(после закр.)")
+
+        if not active_intervals_now:
+            sleep_time = _compute_smart_sleep_sec(current_intervals, max_sleep=float(scan_interval_sec))
+            time.sleep(sleep_time)
+            continue
+
+        scan_iteration += 1
+        tasks = [(s, i) for s in current_symbols for i in active_intervals_now]
+
+        logger.info(
+            f"\n🔄 [Итерация #{scan_iteration}] Сканирование {len(tasks)} пар "
+            f"({len(current_symbols)} монет │ Активные ТФ: {', '.join(active_tfs_info)})..."
+        )
 
         # Параллельное сканирование пар через пул потоков
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -784,8 +891,8 @@ def run_scanner_loop(
             except Exception as e:
                 logger.debug(f"Ошибка получения сводки: {e}")
 
-        # Ожидание до следующего цикла
-        sleep_time = max(1.0, scan_interval_sec - elapsed)
+        # Умное ожидание точно до следующего окна за 1 минуту до закрытия свечи
+        sleep_time = _compute_smart_sleep_sec(current_intervals, max_sleep=float(scan_interval_sec))
         time.sleep(sleep_time)
 
     tracker_worker.stop()

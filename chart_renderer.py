@@ -589,10 +589,21 @@ def render_signal_chart(
             algo_score=algo_score,
         )
 
-    # ── Отрисовка уровней торгового плана (SL и TP1-TP4 по Фибоначчи) ──
+    # ── Отрисовка уровней торгового плана (Model 2: Entry Limit 50%, SL, TP1 30%, TP2 70%) ──
     if trade_plan is not None and 0 <= signal_x < n_bars:
         end_lvl_x = n_bars + 26
         text_x = n_bars + 1
+
+        # 0. Точка входа Limit 50% сигнальной свечи (Золотистая пунктирная линия)
+        ax_price.plot(
+            [signal_x, end_lvl_x], [trade_plan.entry_price, trade_plan.entry_price],
+            color='#FFB74D', linewidth=1.5, linestyle='--', alpha=0.9, zorder=10
+        )
+        ax_price.text(
+            text_x, trade_plan.entry_price,
+            f" [Entry 50%] {_smart_price_fmt(trade_plan.entry_price)}",
+            color='#FFB74D', fontsize=7.2, fontweight='bold', va='center', zorder=11
+        )
 
         # 1. Стоп-Лосс (Красная линия)
         ax_price.plot(
@@ -605,23 +616,21 @@ def render_signal_chart(
             color='#F23645', fontsize=7.2, fontweight='bold', va='center', zorder=11
         )
 
-        # 2. Тейк-Профиты (TP1-TP4 по Фибоначчи)
+        # 2. Тейк-Профиты Model 2 (TP1: 30% +1.5R Net -> БУ, TP2: 70% +3.0R Net)
         tp_configs = [
-            ("TP1 (23.6%)", trade_plan.tp1_price, trade_plan.tp1_pct, "25%", '#26A69A', ':'),
-            ("TP2 (38.2%)", trade_plan.tp2_price, trade_plan.tp2_pct, "35%", '#089981', '--'),
-            ("TP3 (50.0%)", trade_plan.tp3_price, trade_plan.tp3_pct, "25%", '#00E676', '-'),
-            ("TP4 (61.8%)", trade_plan.tp4_price, trade_plan.tp4_pct, "15%", '#00E5FF', '-'),
+            ("TP1 +1.5R", trade_plan.tp1_price, trade_plan.tp1_pct, "30% -> BE", '#26A69A', '--', 1.6),
+            ("TP2 +3.0R", trade_plan.tp2_price, trade_plan.tp2_pct, "70% Final", '#00E676', '-', 2.0),
         ]
-        for tp_label, tp_p, tp_pct, tp_sh, tp_clr, tp_style in tp_configs:
+        for tp_label, tp_p, tp_pct, tp_sh, tp_clr, tp_style, tp_lw in tp_configs:
             ax_price.plot(
                 [signal_x, end_lvl_x], [tp_p, tp_p],
-                color=tp_clr, linewidth=1.5 if "TP4" not in tp_label else 2.0,
-                linestyle=tp_style, alpha=0.85, zorder=10
+                color=tp_clr, linewidth=tp_lw,
+                linestyle=tp_style, alpha=0.9, zorder=10
             )
             ax_price.text(
                 text_x, tp_p,
                 f" [{tp_label}] {_smart_price_fmt(tp_p)} (+{tp_pct:.2f}% | {tp_sh})",
-                color=tp_clr, fontsize=7.0, fontweight='bold' if "TP3" in tp_label or "TP4" in tp_label else 'normal',
+                color=tp_clr, fontsize=7.2, fontweight='bold',
                 va='center', zorder=11
             )
     
@@ -770,24 +779,20 @@ def annotate_chart_with_analysis(
         draw.text((x0, y), f"Trade: {trade_result.upper()} ({trade_pnl:+.2f}%)", fill=tr_color, font=font_body)
         y += 22
 
-    # ── Trade Plan (Fibonacci & R:R) ──
+    # ── Trade Plan (Model 2: Sweep & Engulfing) ──
     if trade_plan is not None:
         draw.line([(x0, y), (total_w - 12, y)], fill=border_color, width=1)
         y += 7
-        draw.text((x0, y), "TRADE PLAN (FIBONACCI):", fill=(255, 215, 0), font=font_small)
+        draw.text((x0, y), "TRADE PLAN (MODEL 2: SWEEP & ENGULF):", fill=(255, 215, 0), font=font_small)
         y += 15
-        draw.text((x0 + 4, y), f"Entry: {_smart_price_fmt(trade_plan.entry_price)}", fill=text_color, font=font_small)
-        y += 13
-        draw.text((x0 + 4, y), f"SL: {_smart_price_fmt(trade_plan.sl_price)} (-{trade_plan.sl_pct:.2f}%)", fill=(239, 83, 80), font=font_small)
-        y += 13
-        draw.text((x0 + 4, y), f"TP1 (23.6%): {_smart_price_fmt(trade_plan.tp1_price)} (+{trade_plan.tp1_pct:.2f}% | 25%)", fill=(38, 166, 154), font=font_small)
-        y += 13
-        draw.text((x0 + 4, y), f"TP2 (38.2%): {_smart_price_fmt(trade_plan.tp2_price)} (+{trade_plan.tp2_pct:.2f}% | 35%)", fill=(38, 166, 154), font=font_small)
-        y += 13
-        draw.text((x0 + 4, y), f"TP3 (50.0%): {_smart_price_fmt(trade_plan.tp3_price)} (+{trade_plan.tp3_pct:.2f}% | 25%)", fill=(0, 230, 118), font=font_small)
-        y += 13
-        draw.text((x0 + 4, y), f"TP4 (61.8%): {_smart_price_fmt(trade_plan.tp4_price)} (+{trade_plan.tp4_pct:.2f}% | 15%)", fill=(0, 229, 255), font=font_small)
+        draw.text((x0 + 4, y), f"Entry (Limit 50%): {_smart_price_fmt(trade_plan.entry_price)}", fill=(255, 183, 77), font=font_small)
         y += 14
+        draw.text((x0 + 4, y), f"SL (0.15% buf): {_smart_price_fmt(trade_plan.sl_price)} (-{trade_plan.sl_pct:.2f}%)", fill=(239, 83, 80), font=font_small)
+        y += 14
+        draw.text((x0 + 4, y), f"TP1 (+1.5R | 30%): {_smart_price_fmt(trade_plan.tp1_price)} (+{trade_plan.tp1_pct:.2f}% -> BE)", fill=(38, 166, 154), font=font_small)
+        y += 14
+        draw.text((x0 + 4, y), f"TP2 (+3.0R | 70%): {_smart_price_fmt(trade_plan.tp2_price)} (+{trade_plan.tp2_pct:.2f}% Final)", fill=(0, 230, 118), font=font_small)
+        y += 15
         imp_s = f"{'+' if signal_direction == 'SHORT' else '-'}{trade_plan.impulse_pct:.2f}%"
         draw.text((x0 + 4, y), f"R:R: {trade_plan.rr_ratio:.1f}:1  |  Impulse: {_smart_price_fmt(trade_plan.impulse_range)} ({imp_s})", fill=(255, 215, 0), font=font_small)
         y += 16

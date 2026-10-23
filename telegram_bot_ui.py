@@ -251,13 +251,11 @@ class TelegramUIController:
                 f"├ В процессе (Active): <b>{st['active_trades']}</b>\n"
                 f"├ Завершено (Closed): <b>{st['closed_trades']}</b>\n"
                 f"└ <b>{st['wins']}</b> W (прибыль/БУ) │ <b>{st['losses']}</b> L (стоп) │ <b>{st['be_count']}</b> БУ\n\n"
-                f"🎯 <b>Достижение целей (Fibonacci):</b>\n"
-                f"├ <b>TP1 (23.6%):</b> {st['tp1_count']} раз (фиксация 40%)\n"
-                f"├ <b>TP2 (38.2%):</b> {st['tp2_count']} раз (+30% и БУ)\n"
-                f"├ <b>TP3 (50.0%):</b> {st['tp3_count']} раз (+30% runner)\n"
-                f"├ <b>TP4 (61.8%):</b> {st['tp4_count']} раз\n"
-                f"├ <b>Stop Loss:</b> {st['sl_count']} раз\n"
-                f"└ <b>Fail-Fast (3 бара):</b> {st['fail_fast_count']} раз\n"
+                f"🎯 <b>Достижение целей (Model 2: Sweep & Engulfing):</b>\n"
+                f"├ <b>TP1 (+1.5R Net):</b> {st['tp1_count']} раз (фиксация 30% ➔ стоп в БУ)\n"
+                f"├ <b>TP2 (+3.0R Net):</b> {st['tp2_count']} раз (финальная фиксация 70%)\n"
+                f"├ <b>Безубыток (после TP1):</b> {st['be_count']} раз\n"
+                f"└ <b>Stop Loss (-1.0R):</b> {st['sl_count']} раз\n"
             )
             if st["best_trade_usd"] != 0:
                 text += (
@@ -359,8 +357,11 @@ class TelegramUIController:
                 f"При появлении эталонного сигнала (Score ≥ 85%) бот мгновенно отправит график, разволновку и карточку входа."
             )
         else:
+            filled_cnt = sum(1 for t in trades if int(t.get("entry_filled") or 0) == 1)
+            pending_cnt = len(trades) - filled_cnt
             text = (
                 f"🎯 <b>АКТИВНЫЕ СДЕЛКИ В ТРЕКЕРЕ ({len(trades)})</b>\n"
+                f"├ В позиции: <b>{filled_cnt}</b> │ Ожидают лимитку 50%: <b>{pending_cnt}</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             )
             for idx, t in enumerate(trades, 1):
@@ -370,19 +371,27 @@ class TelegramUIController:
                 em_dir = "🟢 LONG" if dir_str == "LONG" else "🔴 SHORT"
                 entry = float(t["entry_price"])
                 cur = float(t["current_price"] or entry)
+                entry_filled = int(t.get("entry_filled") or 0) == 1
                 pnl_usd = t["cur_pnl_usd"]
                 pnl_pct = t["cur_pnl_pct"]
                 pnl_sign = "+" if pnl_usd >= 0 else ""
                 pnl_em = "🟩" if pnl_usd >= 0 else "🟥"
 
-                tp1_st = "✅ ВЗЯТ" if t["tp1_hit"] else f"⏳ {_fmt_price(t['tp1_price'])}"
+                state_badge = "🟢 <b>В ПОЗИЦИИ</b>" if entry_filled else "⏳ <b>ОЖИДАЕТ ВХОДА (Limit 50%)</b>"
+                pnl_line = (
+                    f"{pnl_em} <b>PnL:</b> <b>{pnl_sign}${pnl_usd:,.2f} ({pnl_sign}{pnl_pct:.2f}%)</b>"
+                    if entry_filled
+                    else "⚪ <b>PnL:</b> <i>$0.00 (ждём ретест 50% свечи)</i>"
+                )
+
+                tp1_st = "✅ ВЗЯТ (стоп в БУ)" if t["tp1_hit"] else f"⏳ {_fmt_price(t['tp1_price'])}"
                 tp2_st = "✅ ВЗЯТ" if t["tp2_hit"] else f"⏳ {_fmt_price(t['tp2_price'])}"
-                be_st = "🛡 В БЕЗУБЫТКЕ" if t["be_triggered"] else f"{_fmt_price(t['sl_price'])}"
+                be_st = "🛡 В БЕЗУБЫТКЕ" if (t["tp1_hit"] or t["be_triggered"]) else f"{_fmt_price(t['sl_price'])}"
 
                 text += (
-                    f"<b>#{idx} <code>{sym}</code> ({tf} {em_dir})</b>\n"
-                    f"├ Вход: <b>{_fmt_price(entry)}</b> │ Тек: <b>{_fmt_price(cur)}</b>\n"
-                    f"├ {pnl_em} <b>PnL:</b> <b>{pnl_sign}${pnl_usd:,.2f} ({pnl_sign}{pnl_pct:.2f}%)</b>\n"
+                    f"<b>#{idx} <code>{sym}</code> ({tf} {em_dir})</b> — {state_badge}\n"
+                    f"├ Вход (50%): <b>{_fmt_price(entry)}</b> │ Тек: <b>{_fmt_price(cur)}</b>\n"
+                    f"├ {pnl_line}\n"
                     f"├ Объём: ${t['pos_size_usd']:,.1f} │ Риск: ${t['risk_usd']:.1f}\n"
                     f"├ TP1 (30%): {tp1_st}\n"
                     f"├ TP2 (70%): {tp2_st}\n"

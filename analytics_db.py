@@ -75,10 +75,25 @@ def _migrate_schema(conn: sqlite3.Connection):
             ("notified_tp3", "INTEGER DEFAULT 0"),
             ("notified_closed", "INTEGER DEFAULT 0"),
             ("notified_fail_fast", "INTEGER DEFAULT 0"),
+            ("entry_filled", "INTEGER DEFAULT 0"),
+            ("entry_filled_at", "TEXT"),
+            ("entry_filled_ts", "INTEGER DEFAULT 0"),
+            ("tp1_hit_ts", "INTEGER DEFAULT 0"),
+            ("notified_entry", "INTEGER DEFAULT 0"),
         ]
         for col_name, col_def in add_cols:
             if col_name not in cols_out:
                 conn.execute(f"ALTER TABLE signal_outcomes ADD COLUMN {col_name} {col_def};")
+
+        # Для уже закрытых исторических сделок или сделок с взятым TP1 проставляем entry_filled = 1
+        conn.execute(
+            """
+            UPDATE signal_outcomes
+            SET entry_filled = 1, notified_entry = 1
+            WHERE entry_filled = 0
+              AND (status IN ('closed_tp', 'closed_tp2', 'closed_tp3', 'closed_sl', 'closed_be') OR tp1_hit = 1);
+            """
+        )
 
         # Проверяем таблицу bot_settings
         conn.execute(
@@ -170,6 +185,11 @@ def init_db(db_path: Path | str = ANALYTICS_DB_PATH):
                 notified_tp2 INTEGER DEFAULT 0,
                 notified_closed INTEGER DEFAULT 0,
                 notified_fail_fast INTEGER DEFAULT 0,
+                entry_filled INTEGER DEFAULT 0,
+                entry_filled_at TEXT,
+                entry_filled_ts INTEGER DEFAULT 0,
+                tp1_hit_ts INTEGER DEFAULT 0,
+                notified_entry INTEGER DEFAULT 0,
                 bars_to_first_tp INTEGER DEFAULT 0,
                 bars_to_close INTEGER DEFAULT 0,
                 max_favorable REAL DEFAULT 0.0,
@@ -530,6 +550,11 @@ def get_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> List[Dict[str
             o.notified_tp2,
             o.notified_closed,
             o.notified_fail_fast,
+            o.entry_filled,
+            o.entry_filled_at,
+            o.entry_filled_ts,
+            o.tp1_hit_ts,
+            o.notified_entry,
             o.bars_to_first_tp,
             o.bars_to_close,
             o.max_favorable,
@@ -611,13 +636,17 @@ def get_analytics_summary(db_path: Path | str = ANALYTICS_DB_PATH) -> Dict[str, 
         statuses = {r["status"]: r["cnt"] for r in status_rows}
 
         active = statuses.get("active", 0)
-        closed_tp = statuses.get("closed_tp", 0)
+        closed_tp = (
+            statuses.get("closed_tp", 0)
+            + statuses.get("closed_tp2", 0)
+            + statuses.get("closed_tp3", 0)
+        )
         closed_be = statuses.get("closed_be", 0)
-        closed_sl = statuses.get("closed_sl", 0)
+        closed_sl = statuses.get("closed_sl", 0) + statuses.get("closed_fail_fast", 0)
         expired = statuses.get("expired", 0)
         closed_total = closed_tp + closed_be + closed_sl + expired
 
-        # Win Rate (TP4 + BE считаем безубыточно-прибыльными исходами)
+        # Win Rate (TP2/TP + BE считаем безубыточно-прибыльными исходами)
         decided = closed_tp + closed_be + closed_sl
         win_rate = round(((closed_tp + closed_be) / decided * 100), 1) if decided > 0 else 0.0
         full_tp_win_rate = round((closed_tp / decided * 100), 1) if decided > 0 else 0.0
@@ -677,9 +706,9 @@ def get_analytics_summary(db_path: Path | str = ANALYTICS_DB_PATH) -> Dict[str, 
                 COUNT(s.id) as signals_count,
                 SUM(o.tp2_hit) as tp2_count,
                 SUM(o.tp4_hit) as tp4_count,
-                SUM(CASE WHEN o.status IN ('closed_tp', 'closed_be') THEN 1 ELSE 0 END) as wins,
+                SUM(CASE WHEN o.status IN ('closed_tp', 'closed_tp2', 'closed_tp3', 'closed_be') THEN 1 ELSE 0 END) as wins,
                 SUM(CASE WHEN o.status = 'closed_sl' THEN 1 ELSE 0 END) as losses,
-                AVG(CASE WHEN o.status != 'active' THEN o.final_pnl_pct END) as avg_pnl
+                AVG(CASE WHEN o.status NOT IN ('active', 'cancelled_unfilled', 'info_only') THEN o.final_pnl_pct END) as avg_pnl
             FROM signals s
             JOIN signal_outcomes o ON s.id = o.signal_id
             GROUP BY s.symbol
@@ -825,9 +854,9 @@ def get_detailed_statistics(period: str = "all", db_path: Path | str = ANALYTICS
             SELECT
                 COUNT(s.id) AS total_sig,
                 SUM(CASE WHEN o.status = 'active' THEN 1 ELSE 0 END) AS active_cnt,
-                SUM(CASE WHEN o.status != 'active' AND o.status IS NOT NULL THEN 1 ELSE 0 END) AS closed_cnt,
-                SUM(CASE WHEN o.status IN ('closed_tp', 'closed_tp3', 'closed_be') THEN 1 ELSE 0 END) AS wins_cnt,
-                SUM(CASE WHEN o.status IN ('closed_tp', 'closed_tp3') THEN 1 ELSE 0 END) AS full_tp_cnt,
+                SUM(CASE WHEN o.status NOT IN ('active', 'cancelled_unfilled', 'info_only') AND o.status IS NOT NULL THEN 1 ELSE 0 END) AS closed_cnt,
+                SUM(CASE WHEN o.status IN ('closed_tp', 'closed_tp2', 'closed_tp3', 'closed_be') THEN 1 ELSE 0 END) AS wins_cnt,
+                SUM(CASE WHEN o.status IN ('closed_tp', 'closed_tp2', 'closed_tp3') THEN 1 ELSE 0 END) AS full_tp_cnt,
                 SUM(CASE WHEN o.status IN ('closed_sl', 'closed_fail_fast') THEN 1 ELSE 0 END) AS losses_cnt,
                 SUM(CASE WHEN o.status = 'closed_be' THEN 1 ELSE 0 END) AS be_cnt,
                 SUM(CASE WHEN o.tp1_hit = 1 THEN 1 ELSE 0 END) AS tp1_cnt,
@@ -870,7 +899,7 @@ def get_detailed_statistics(period: str = "all", db_path: Path | str = ANALYTICS
             SELECT
                 s.interval,
                 COUNT(s.id) AS total_sig,
-                SUM(CASE WHEN o.status IN ('closed_tp', 'closed_be') THEN 1 ELSE 0 END) AS wins,
+                SUM(CASE WHEN o.status IN ('closed_tp', 'closed_tp2', 'closed_tp3', 'closed_be') THEN 1 ELSE 0 END) AS wins,
                 SUM(CASE WHEN o.status IN ('closed_sl', 'closed_fail_fast') THEN 1 ELSE 0 END) AS losses,
                 COALESCE(SUM(o.net_pnl_usd), 0.0) AS pnl_usd
             FROM signals s
@@ -898,7 +927,7 @@ def get_detailed_statistics(period: str = "all", db_path: Path | str = ANALYTICS
             SELECT
                 s.symbol,
                 COUNT(s.id) AS total_sig,
-                SUM(CASE WHEN o.status IN ('closed_tp', 'closed_be') THEN 1 ELSE 0 END) AS wins,
+                SUM(CASE WHEN o.status IN ('closed_tp', 'closed_tp2', 'closed_tp3', 'closed_be') THEN 1 ELSE 0 END) AS wins,
                 SUM(CASE WHEN o.status IN ('closed_sl', 'closed_fail_fast') THEN 1 ELSE 0 END) AS losses,
                 COALESCE(SUM(o.net_pnl_usd), 0.0) AS pnl_usd,
                 SUM(CASE WHEN o.tp2_hit = 1 THEN 1 ELSE 0 END) AS tp2_cnt
@@ -975,7 +1004,12 @@ def get_active_trades_detailed(db_path: Path | str = ANALYTICS_DB_PATH) -> List[
             o.pos_size_usd,
             o.pos_size_coins,
             o.risk_usd,
+            o.entry_filled,
+            o.entry_filled_at,
+            o.entry_filled_ts,
             o.tp1_hit,
+            o.tp1_hit_ts,
+            o.notified_entry,
             o.tp2_hit,
             o.tp3_hit,
             o.tp4_hit,
@@ -997,10 +1031,18 @@ def get_active_trades_detailed(db_path: Path | str = ANALYTICS_DB_PATH) -> List[
             cur = float(d["current_price"] or entry)
             is_long = (d["direction"] == "LONG")
             pos_usd = float(d["pos_size_usd"] or 0.0)
+            entry_filled = int(d.get("entry_filled") or 0)
+            tp1_hit = int(d.get("tp1_hit") or 0)
+            tp1_price = float(d.get("tp1_price") or entry)
             
-            # Расчет текущего плавающего PnL
-            if entry > 0 and pos_usd > 0:
-                pnl_pct = ((cur - entry) / entry * 100.0) if is_long else ((entry - cur) / entry * 100.0)
+            # Расчет текущего плавающего PnL (только если лимитный ордер 50% уже исполнен!)
+            if entry_filled == 1 and entry > 0 and pos_usd > 0:
+                cur_move_pct = ((cur - entry) / entry * 100.0) if is_long else ((entry - cur) / entry * 100.0)
+                if tp1_hit == 1:
+                    tp1_move_pct = ((tp1_price - entry) / entry * 100.0) if is_long else ((entry - tp1_price) / entry * 100.0)
+                    pnl_pct = 0.30 * tp1_move_pct + 0.70 * cur_move_pct
+                else:
+                    pnl_pct = cur_move_pct
                 cur_pnl_usd = round(pos_usd * (pnl_pct / 100.0), 2)
             else:
                 pnl_pct = 0.0

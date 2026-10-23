@@ -87,6 +87,7 @@ def format_signal_message(
     origin_div: bool = False,
     w3_longest: bool = True,
     conflict_note: Optional[str] = None,
+    sec_to_close: int = 0,
 ) -> str:
     """Формирует текст сообщения для Telegram с 1-клик копируемыми уровнями и объемами."""
     dt = detection_time or datetime.now()
@@ -108,6 +109,11 @@ def format_signal_message(
             f"└ <i>По активу уже сопровождается: {html.escape(str(conflict_note))}</i>\n"
             f"──────────────────────────\n\n"
         )
+
+    if sec_to_close > 0:
+        timing_line = f"⏳ До закрытия свечи: <b>~{sec_to_close} сек</b> <i>(успейте выставить лимитку 50%)</i>\n"
+    else:
+        timing_line = "⏳ Статус: <b>Ожидание коррекции 50% свечи (Limit-ордер)</b>\n"
 
     if trade_plan is not None:
         entry_c = _fmt_pc(trade_plan.entry_price)
@@ -134,7 +140,7 @@ def format_signal_message(
             f"2️⃣ 🛑 <b>STOP LOSS:</b> {sl_c} (−{trade_plan.sl_pct:.2f}%)\n"
             f"   {sl_note}\n\n"
             f"3️⃣ 🎯 <b>TP1 (+1.5R Net):</b> {tp1_c} (+{trade_plan.tp1_pct:.2f}%)\n"
-            f"   └ Закрыть 30%: {tp1_coins_c} монет (<b>{tp1_vol_s}</b>)\n\n"
+            f"   └ Закрыть 30%: {tp1_coins_c} монет (<b>{tp1_vol_s}</b>) ➔ стоп в БУ\n\n"
             f"4️⃣ 🎯 <b>TP2 (+3.0R Net):</b> {tp2_c} (+{trade_plan.tp2_pct:.2f}%)\n"
             f"   └ Закрыть 70%: {tp2_coins_c} монет (<b>{tp2_vol_s}</b>)\n\n"
         )
@@ -146,7 +152,8 @@ def format_signal_message(
         f"{conflict_banner}"
         f"{header}\n\n"
         f"📌 <code>{symbol}</code> (Crypto Futures)\n"
-        f"⏱️ Таймфрейм: <b>{interval}</b>\n\n"
+        f"⏱️ Таймфрейм: <b>{interval}</b>\n"
+        f"{timing_line}\n"
         f"{plan_block}"
         f"📅 {dt_str}"
     )
@@ -239,6 +246,7 @@ def send_signal_to_telegram(
     bot_token: str = TELEGRAM_BOT_TOKEN,
     chat_id: str = TELEGRAM_CHAT_ID,
     min_score: int = TELEGRAM_MIN_SCORE,
+    sec_to_close: int = 0,
 ) -> Optional[int]:
     """
     Отправляет подтверждённый сигнал в Telegram.
@@ -273,6 +281,7 @@ def send_signal_to_telegram(
         origin_div=origin_div,
         w3_longest=w3_longest,
         conflict_note=conflict_note,
+        sec_to_close=sec_to_close,
     )
 
     url_photo = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
