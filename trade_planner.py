@@ -27,7 +27,7 @@ from config import (
     DEFAULT_LEVERAGE,
     SL_BUFFER_PCT,
     MIN_RR_RATIO,
-    COMMISSION_RATE,
+    COMMISSION_RATE, SL_ZONE_FROM_EXTREME, TP1_MULT, TP2_MULT,
 )
 
 logger = logging.getLogger(__name__)
@@ -140,8 +140,8 @@ def calculate_trade_plan(
     w0_base = max(w0, 1e-9)
     impulse_pct = (impulse_range / w0_base) * 100.0
 
-    tp1_share = 0.30
-    tp2_share = 0.70
+    tp1_share = TP_SHARES[0] if len(TP_SHARES) > 0 else 0.40
+    tp2_share = TP_SHARES[1] if len(TP_SHARES) > 1 else 0.60
     tp3_share = 0.00
     tp4_share = 0.00
 
@@ -150,7 +150,15 @@ def calculate_trade_plan(
     if direction == "SHORT":
         # W5 — хай свечи поглощения S. Входим лимиткой на 50% свечи в SHORT.
         # Стоп-лосс выше хая W5 с буфером 0.15%
-        sl_price = w5 + (buffer_pct / 100.0) * entry_price
+        # Стоп-лосс внутри свечи поглощения S на уровне 83% (0.17 от экстремума W5 внутрь свечи)
+        base_risk_dist = max(w5 - entry_price, 1e-6)
+        candle_range = 2.0 * base_risk_dist
+        sl_price = w5 - SL_ZONE_FROM_EXTREME * candle_range
+        if sl_price <= entry_price:
+            sl_price = entry_price * 1.003
+        base_risk_frac = base_risk_dist / entry_price
+        reward_frac_15 = (TP1_MULT * base_risk_frac + 2.0 * fee) / max(1e-6, 1.0 - fee)
+        reward_frac_30 = (TP2_MULT * base_risk_frac + 2.0 * fee) / max(1e-6, 1.0 - fee)
         if sl_price <= entry_price:
             sl_price = entry_price * (1.0 + buffer_pct / 100.0)
 
@@ -158,8 +166,8 @@ def calculate_trade_plan(
         base_risk_frac = base_risk_dist / entry_price
 
         # Тейк-профиты с учетом комиссий: TP1 (+1.5R Net) и TP2 (+3.0R Net)
-        reward_frac_15 = (1.5 * base_risk_frac + 2.0 * fee) / max(1e-6, 1.0 - fee)
-        reward_frac_30 = (3.0 * base_risk_frac + 2.0 * fee) / max(1e-6, 1.0 - fee)
+        reward_frac_15 = (TP1_MULT * base_risk_frac + 2.0 * fee) / max(1e-6, 1.0 - fee)
+        reward_frac_30 = (TP2_MULT * base_risk_frac + 2.0 * fee) / max(1e-6, 1.0 - fee)
 
         tp1_price = entry_price - entry_price * reward_frac_15
         tp2_price = entry_price - entry_price * reward_frac_30
@@ -177,7 +185,15 @@ def calculate_trade_plan(
     else:
         # W5 — лоу свечи поглощения S. Входим лимиткой на 50% свечи в LONG.
         # Стоп-лосс ниже лоу W5 с буфером 0.15%
-        sl_price = w5 - (buffer_pct / 100.0) * entry_price
+        # Стоп-лосс внутри свечи поглощения S на уровне 83% (0.17 от экстремума W5 внутрь свечи)
+        base_risk_dist = max(entry_price - w5, 1e-6)
+        candle_range = 2.0 * base_risk_dist
+        sl_price = w5 + SL_ZONE_FROM_EXTREME * candle_range
+        if sl_price >= entry_price:
+            sl_price = entry_price * 0.997
+        base_risk_frac = base_risk_dist / entry_price
+        reward_frac_15 = (TP1_MULT * base_risk_frac + 2.0 * fee) / max(1e-6, 1.0 - fee)
+        reward_frac_30 = (TP2_MULT * base_risk_frac + 2.0 * fee) / max(1e-6, 1.0 - fee)
         if sl_price >= entry_price:
             sl_price = entry_price * (1.0 - buffer_pct / 100.0)
 
@@ -185,8 +201,8 @@ def calculate_trade_plan(
         base_risk_frac = base_risk_dist / entry_price
 
         # Тейк-профиты с учетом комиссий: TP1 (+1.5R Net) и TP2 (+3.0R Net)
-        reward_frac_15 = (1.5 * base_risk_frac + 2.0 * fee) / max(1e-6, 1.0 - fee)
-        reward_frac_30 = (3.0 * base_risk_frac + 2.0 * fee) / max(1e-6, 1.0 - fee)
+        reward_frac_15 = (TP1_MULT * base_risk_frac + 2.0 * fee) / max(1e-6, 1.0 - fee)
+        reward_frac_30 = (TP2_MULT * base_risk_frac + 2.0 * fee) / max(1e-6, 1.0 - fee)
 
         tp1_price = entry_price + entry_price * reward_frac_15
         tp2_price = entry_price + entry_price * reward_frac_30
@@ -213,7 +229,7 @@ def calculate_trade_plan(
         tp2_share * tp2_pct
     )
 
-    rr_ratio = 2.55  # Фиксированное средневзвешенное R:R (0.30 * 1.5R + 0.70 * 3.0R = 2.55R Net)
+    rr_ratio = round((tp1_share * TP1_MULT + tp2_share * TP2_MULT) / max(0.01, (1.0 - 2.0 * SL_ZONE_FROM_EXTREME)), 2)  # 4.09R Net при полном TP2
     is_viable = (rr_ratio >= min_rr_ratio) and (sl_pct > 0.0)
 
     # Расчет точных объемов позиции и маржи

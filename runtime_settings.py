@@ -112,7 +112,7 @@ def get_runtime_config(db_path: Path | str = ANALYTICS_DB_PATH) -> Dict[str, Any
     # Загружаем из базы или выставляем дефолты
     active_symbols = get_raw_setting("active_symbols", None, db_path=db_path)
     if not active_symbols or not isinstance(active_symbols, list):
-        active_symbols = list(TOP_12_LEADERS)
+        active_symbols = list(TOP_30_SYMBOLS)
         set_raw_setting("active_symbols", active_symbols, db_path=db_path)
 
     live_timeframes = get_raw_setting("live_timeframes", None, db_path=db_path)
@@ -122,13 +122,13 @@ def get_runtime_config(db_path: Path | str = ANALYTICS_DB_PATH) -> Dict[str, Any
 
     deposit_usd = float(get_raw_setting("deposit_usd", 500.0, db_path=db_path))
     risk_budget_usd = float(get_raw_setting("risk_budget_usd", float(RISK_BUDGET_USD), db_path=db_path))
-    risk_pct = round((risk_budget_usd / deposit_usd * 100.0), 2) if deposit_usd > 0 else 1.0
+    risk_pct = round((risk_budget_usd / deposit_usd * 100.0), 2) if deposit_usd > 0 else 0.5
     default_leverage = int(get_raw_setting("default_leverage", int(DEFAULT_LEVERAGE), db_path=db_path))
     min_score = int(get_raw_setting("min_score", int(TELEGRAM_MIN_SCORE), db_path=db_path))
     scanner_paused = bool(get_raw_setting("scanner_paused", False, db_path=db_path))
     night_mode_enabled = bool(get_raw_setting("night_mode_enabled", True, db_path=db_path))
-    night_mode_start = int(get_raw_setting("night_mode_start", 23, db_path=db_path))
-    night_mode_end = int(get_raw_setting("night_mode_end", 9, db_path=db_path))
+    night_mode_start = int(get_raw_setting("night_mode_start", 0, db_path=db_path))
+    night_mode_end = int(get_raw_setting("night_mode_end", 8, db_path=db_path))
 
     cfg = {
         "active_symbols": active_symbols,
@@ -446,7 +446,7 @@ def toggle_symbol(symbol: str, db_path: Path | str = ANALYTICS_DB_PATH) -> Tuple
 
 def reset_symbols_to_default(db_path: Path | str = ANALYTICS_DB_PATH) -> List[str]:
     """Сбрасывает список монет к эталонному ТОП-12."""
-    default_list = list(TOP_12_LEADERS)
+    default_list = list(TOP_30_SYMBOLS)
     set_raw_setting("active_symbols", default_list, db_path=db_path)
     set_raw_setting("custom_symbols", [], db_path=db_path)
     logger.info("Список монет сброшен к рекомендованным ТОП-12")
@@ -457,7 +457,7 @@ def reset_symbols_to_default(db_path: Path | str = ANALYTICS_DB_PATH) -> List[st
 # Управление таймфреймами
 # ═══════════════════════════════════════════════════════════════════════════
 
-ALLOWED_TIMEFRAMES = ["5m", "15m", "1h", "4h"]
+ALLOWED_TIMEFRAMES = ["5m", "15m", "30m", "1h", "4h", "1d"]
 
 def toggle_timeframe(tf: str, db_path: Path | str = ANALYTICS_DB_PATH) -> Tuple[bool, str]:
     """Переключает статус таймфрейма."""
@@ -495,7 +495,7 @@ def set_deposit(amount: float, db_path: Path | str = ANALYTICS_DB_PATH) -> float
     cfg = get_runtime_config(db_path=db_path)
     current_risk = cfg["risk_budget_usd"]
     if current_risk > amount * 0.10:
-        new_risk = round(amount * 0.01, 2)  # 1%
+        new_risk = round(amount * 0.005, 2)  # 0.5%
         set_raw_setting("risk_budget_usd", new_risk, db_path=db_path)
     
     logger.info(f"Установлен депозит: ${amount:,.2f}")
@@ -566,11 +566,14 @@ def is_night_mode_active(cfg: Optional[Dict[str, Any]] = None, db_path: Path | s
     if not cfg.get("night_mode_enabled", True):
         return False, "Выключен"
 
-    start_h = int(cfg.get("night_mode_start", 23))
-    end_h = int(cfg.get("night_mode_end", 9))
+    start_h = int(cfg.get("night_mode_start", 0))
+    end_h = int(cfg.get("night_mode_end", 8))
+    end_h = int(cfg.get("night_mode_end", 8))
 
     now_msk = get_msk_time()
     cur_h = now_msk.hour
+    if now_msk.weekday() == 6:
+        return True, "Воскресенье — выходной (Пн–Сб 08–10, 15–24 МСК)"
 
     if start_h > end_h:
         # Переход через полночь, например 23:00 -> 09:00
@@ -581,7 +584,59 @@ def is_night_mode_active(cfg: Optional[Dict[str, Any]] = None, db_path: Path | s
     else:
         is_night = False
 
-    hours_str = f"{start_h:02d}:00–{end_h:02d}:00 МСК"
+    hours_str = f"Тихие часы {start_h:02d}:00–{end_h:02d}:00 и 10:00–15:00 МСК (Прайм: 08–10, 15–24 МСК без ВС)"
+    if start_h == 0 and end_h == 8 and (10 <= cur_h < 15):
+        is_night = True
+    return is_night, hours_str
+
+
+def is_bar_allowed_by_schedule(
+    bar_dt_utc: Any,
+    interval: str,
+    cfg: Optional[Dict[str, Any]] = None,
+    db_path: Path | str = ANALYTICS_DB_PATH,
+) -> Tuple[bool, str]:
+    """
+    Проверяет, попадает ли время закрывающейся сигнальной свечи в разрешённые прайм-диапазоны МСК:
+    - Исключено Воскресенье (weekday == 6 по МСК).
+    - Для интрадей ТФ (5m, 15m, 30m, 1h): разрешены часы 08:00–09:59 и 15:00–23:59 МСК.
+    - Для 4h: разрешены все слоты Пн–Сб, кроме токсичных 07:00 и 11:00 МСК.
+    - Для 1d: разрешены все дни Пн–Сб.
+    """
+    if cfg is None:
+        cfg = get_runtime_config(db_path=db_path)
+
+    if not cfg.get("night_mode_enabled", True):
+        return True, "24/7"
+
+    from datetime import timedelta
+    if hasattr(bar_dt_utc, "to_pydatetime"):
+        dt_u = bar_dt_utc.to_pydatetime()
+    elif isinstance(bar_dt_utc, datetime):
+        dt_u = bar_dt_utc
+    else:
+        dt_u = datetime.now(timezone.utc)
+
+    if dt_u.tzinfo is None:
+        dt_u = dt_u.replace(tzinfo=timezone.utc)
+    dt_msk = dt_u.astimezone(timezone.utc) + timedelta(hours=3)
+
+    if dt_msk.weekday() == 6:
+        return False, "sunday_excluded_msk"
+
+    hr = dt_msk.hour
+    if interval in ("5m", "15m", "30m", "1h"):
+        if hr in (8, 9, 15, 16, 17, 18, 19, 20, 21, 22, 23):
+            return True, "prime_intraday_msk"
+        return False, f"outside_prime_hours_msk ({hr:02d}:00)"
+    elif interval == "4h":
+        if hr in (7, 11):
+            return False, f"forbidden_4h_slot_msk ({hr:02d}:00)"
+        return True, "allowed_4h_msk"
+    elif interval == "1d":
+        return True, "allowed_1d_msk"
+
+    return True, "allowed"
     return is_night, hours_str
 
 
@@ -607,8 +662,9 @@ def toggle_night_mode(db_path: Path | str = ANALYTICS_DB_PATH) -> bool:
 def adjust_night_mode_hour(which: str, delta: int, db_path: Path | str = ANALYTICS_DB_PATH) -> Tuple[int, int]:
     """Смещает час начала ('start') или конца ('end') на delta (-1 или +1)."""
     cfg = get_runtime_config(db_path=db_path)
-    start_h = int(cfg.get("night_mode_start", 23))
-    end_h = int(cfg.get("night_mode_end", 9))
+    start_h = int(cfg.get("night_mode_start", 0))
+    end_h = int(cfg.get("night_mode_end", 8))
+    end_h = int(cfg.get("night_mode_end", 8))
     if which == "start":
         start_h = (start_h + delta) % 24
     elif which == "end":

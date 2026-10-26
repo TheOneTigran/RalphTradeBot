@@ -1040,7 +1040,7 @@ def get_active_trades_detailed(db_path: Path | str = ANALYTICS_DB_PATH) -> List[
                 cur_move_pct = ((cur - entry) / entry * 100.0) if is_long else ((entry - cur) / entry * 100.0)
                 if tp1_hit == 1:
                     tp1_move_pct = ((tp1_price - entry) / entry * 100.0) if is_long else ((entry - tp1_price) / entry * 100.0)
-                    pnl_pct = 0.30 * tp1_move_pct + 0.70 * cur_move_pct
+                    pnl_pct = 0.40 * tp1_move_pct + 0.60 * cur_move_pct
                 else:
                     pnl_pct = cur_move_pct
                 cur_pnl_usd = round(pos_usd * (pnl_pct / 100.0), 2)

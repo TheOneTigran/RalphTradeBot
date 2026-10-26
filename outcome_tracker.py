@@ -86,7 +86,7 @@ def fetch_recent_klines(symbol: str, interval: str, limit: int = 150) -> Optiona
         logger.debug(f"Binance klines error for {symbol} {interval}: {e}")
 
     try:
-        bybit_tf_map = {"1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240", "1d": "D"}
+        bybit_tf_map = {"1m": "1", "5m": "5", "15m": "15", "30m": "30", "1h": "60", "4h": "240", "1d": "D"}
         bybit_interval = bybit_tf_map.get(interval, "15")
         bybit_url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval={bybit_interval}&limit={limit}"
         resp_b = requests.get(bybit_url, headers=headers, timeout=8)
@@ -364,7 +364,7 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
                             bars_to_close = 1
                             tp1_g = (tp1 - entry) / entry * 100.0
                             tp2_g = (tp2 - entry) / entry * 100.0
-                            final_pnl = round(0.30 * tp1_g + 0.70 * tp2_g, 2)
+                            final_pnl = round(0.40 * tp1_g + 0.60 * tp2_g, 2)
                             break
                     continue
 
@@ -419,7 +419,7 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
                             bars_to_close = 1
                             tp1_g = (entry - tp1) / entry * 100.0
                             tp2_g = (entry - tp2) / entry * 100.0
-                            final_pnl = round(0.30 * tp1_g + 0.70 * tp2_g, 2)
+                            final_pnl = round(0.40 * tp1_g + 0.60 * tp2_g, 2)
                             break
                     continue
 
@@ -476,7 +476,7 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
                         bars_to_close = bars_since_entry
                         tp1_g = (tp1 - entry) / entry * 100.0
                         tp2_g = (tp2 - entry) / entry * 100.0
-                        final_pnl = round(0.30 * tp1_g + 0.70 * tp2_g, 2)
+                        final_pnl = round(0.40 * tp1_g + 0.60 * tp2_g, 2)
                         break
 
                     # ВАЖНО: На этой же минутной свече (c_open_ms == tp1_hit_ts) НЕ проверяем безубыток!
@@ -506,7 +506,7 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
                         bars_to_close = bars_since_entry
                         tp1_g = (entry - tp1) / entry * 100.0
                         tp2_g = (entry - tp2) / entry * 100.0
-                        final_pnl = round(0.30 * tp1_g + 0.70 * tp2_g, 2)
+                        final_pnl = round(0.40 * tp1_g + 0.60 * tp2_g, 2)
                         break
 
                     # ВАЖНО: На этой же минутной свече (c_open_ms == tp1_hit_ts) НЕ проверяем безубыток!
@@ -529,7 +529,7 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
                     bars_to_close = bars_since_entry
                     tp1_g = (tp1 - entry) / entry * 100.0
                     tp2_g = (tp2 - entry) / entry * 100.0
-                    final_pnl = round(0.30 * tp1_g + 0.70 * tp2_g, 2)
+                    final_pnl = round(0.40 * tp1_g + 0.60 * tp2_g, 2)
                     break
 
                 # Возврат цены вниз к уровню Безубытка после взятия TP1
@@ -539,7 +539,7 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
                     status = "closed_be"
                     bars_to_close = bars_since_entry
                     tp1_g = (tp1 - entry) / entry * 100.0
-                    final_pnl = round(0.30 * tp1_g, 2)
+                    final_pnl = round(0.40 * tp1_g, 2)
                     break
 
             else:  # SHORT
@@ -551,7 +551,7 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
                     bars_to_close = bars_since_entry
                     tp1_g = (entry - tp1) / entry * 100.0
                     tp2_g = (entry - tp2) / entry * 100.0
-                    final_pnl = round(0.30 * tp1_g + 0.70 * tp2_g, 2)
+                    final_pnl = round(0.40 * tp1_g + 0.60 * tp2_g, 2)
                     break
 
                 # Возврат цены вверх к уровню Безубытка после взятия TP1
@@ -561,7 +561,7 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
                     status = "closed_be"
                     bars_to_close = bars_since_entry
                     tp1_g = (entry - tp1) / entry * 100.0
-                    final_pnl = round(0.30 * tp1_g, 2)
+                    final_pnl = round(0.40 * tp1_g, 2)
                     break
 
     # Экспирация по TTL (считаем в барах исходного ТФ с момента входа)
@@ -578,7 +578,7 @@ def evaluate_signal_progress(signal: Dict[str, Any], candles: List[Dict[str, Any
             )
             if tp1_hit:
                 tp1_g = abs(tp1 - entry) / entry * 100.0
-                final_pnl = round(0.30 * tp1_g + 0.70 * cur_move, 2)
+                final_pnl = round(0.40 * tp1_g + 0.60 * cur_move, 2)
             else:
                 final_pnl = round(cur_move, 2)
 
@@ -668,8 +668,8 @@ def track_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> int:
         new_status = updates.get("status", "active")
 
         # Доли Model 2: 30% TP1 (+1.5R Net), 70% TP2 (+3.0R Net)
-        tp1_share = TP_SHARES[0] if len(TP_SHARES) > 0 else 0.30
-        tp2_share = TP_SHARES[1] if len(TP_SHARES) > 1 else 0.70
+        tp1_share = TP_SHARES[0] if len(TP_SHARES) > 0 else 0.40
+        tp2_share = TP_SHARES[1] if len(TP_SHARES) > 1 else 0.60
 
         tp1_gain_pct = abs(entry - tp1) / entry * 100.0
         tp2_gain_pct = abs(entry - tp2) / entry * 100.0
@@ -689,9 +689,9 @@ def track_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> int:
                     f"✅ <b>ВХОД В СДЕЛКУ АКТИВИРОВАН (Limit 50%): {_fmt_pc(entry)}</b>\n\n"
                     f"📌 <b>Инструмент:</b> #{sym} ({tf}) — {dir_label}\n"
                     f"🎯 <b>Цена вернулась на 50% сигнальной свечи и исполнила лимитный ордер!</b>\n"
-                    f"├ 🛑 <b>Stop Loss:</b> {_fmt_pc(sl)} (Риск: -${risk_usd:.2f} / -1.0R)\n"
-                    f"├ 🎯 <b>TP1 (30% объёма | +1.5R Net):</b> {_fmt_pc(tp1)} ➔ после взятия стоп в БУ\n"
-                    f"└ 🏆 <b>TP2 (70% объёма | +3.0R Net):</b> {_fmt_pc(tp2)} (финальный выход)"
+                    f"├ 🛑 <b>Stop Loss (83% свечи):</b> {_fmt_pc(sl)} (Риск: -${risk_usd:.2f} / -1.0R)\n"
+                    f"├ 🎯 <b>TP1 (40% объёма | 1.5x / +2.27R Net):</b> {_fmt_pc(tp1)} ➔ после взятия стоп в БУ\n"
+                    f"└ 🏆 <b>TP2 (60% объёма | 3.5x / +5.30R Net):</b> {_fmt_pc(tp2)} (финальный выход)"
                 )
                 send_trade_update_reply(reply_to_message_id=tg_msg_id, text=entry_text)
                 logger.info(f"📤 Отправлено уведомление о входе (Limit 50%) для #{sig_id} {sym}")
@@ -727,9 +727,9 @@ def track_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> int:
                 be_price_c = _fmt_pc(entry)
                 tp1_text = (
                     f"🎯 <b>TP1 ВЗЯТ по цене {_fmt_pc(tp1)} (+{tp1_gain_pct:.2f}%)!</b>\n\n"
-                    f"✅ Зафиксировано <b>30% позиции (+1.5R Net)</b>: <b>+${tp1_net_usd:.2f}</b> чистыми (с вычетом комиссий).\n"
-                    f"🛡️ <b>СРОЧНОЕ ДЕЙСТВИЕ:</b> Перенесите Stop Loss оставшихся 70% в <b>БЕЗУБЫТОК</b> на цену входа {be_price_c}.\n\n"
-                    f"👉 Держите лимитный ордер на финальный TP2: {_fmt_pc(tp2)} (+3.0R Net)."
+                    f"✅ Зафиксировано <b>40% позиции (1.5x | +2.27R Net)</b>: <b>+${tp1_net_usd:.2f}</b> чистыми (с вычетом комиссий).\n"
+                    f"🛡️ <b>СРОЧНОЕ ДЕЙСТВИЕ:</b> Перенесите Stop Loss оставшихся 60% в <b>БЕЗУБЫТОК</b> на цену входа {be_price_c}.\n\n"
+                    f"👉 Держите лимитный ордер на финальный TP2: {_fmt_pc(tp2)} (3.5x | +5.30R Net)."
                 )
                 send_trade_update_reply(reply_to_message_id=tg_msg_id, text=tp1_text)
                 logger.info(f"📤 Отправлено уведомление TP1 для #{sig_id} {sym}")
@@ -742,11 +742,11 @@ def track_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> int:
             full_r = full_tp_profit_usd / risk_usd if risk_usd > 0 else 0.0
             if tg_msg_id:
                 tp2_text = (
-                    f"🏆 <b>TP2 (ФИНАЛЬНАЯ ЦЕЛЬ +3.0R Net) ВЗЯТ по цене {_fmt_pc(tp2)} (+{tp2_gain_pct:.2f}%)!</b>\n\n"
-                    f"✅ Зафиксированы оставшиеся <b>70% позиции</b>: <b>+${tp2_net_usd:.2f}</b> чистыми.\n"
+                    f"🏆 <b>TP2 (ФИНАЛЬНАЯ ЦЕЛЬ 3.5x / +5.30R Net) ВЗЯТ по цене {_fmt_pc(tp2)} (+{tp2_gain_pct:.2f}%)!</b>\n\n"
+                    f"✅ Зафиксированы оставшиеся <b>60% позиции</b>: <b>+${tp2_net_usd:.2f}</b> чистыми.\n"
                     f"🎉 <b>СДЕЛКА ПОЛНОСТЬЮ ЗАКРЫТА С МАКСИМАЛЬНЫМ ПРОФИТОМ:</b>\n"
-                    f"├ TP1 (30%): +${tp1_net_usd:.2f} (+1.5R Net)\n"
-                    f"├ TP2 (70%): +${tp2_net_usd:.2f} (+3.0R Net)\n"
+                    f"├ TP1 (40%): +${tp1_net_usd:.2f} (1.5x | +2.27R Net)\n"
+                    f"├ TP2 (60%): +${tp2_net_usd:.2f} (3.5x | +5.30R Net)\n"
                     f"└ 💰 <b>Итоговый чистый PnL: +${full_tp_profit_usd:.2f} (+{full_r:+.2f}R с учётом комиссий)</b>\n\n"
                     f"🏁 <i>Обе цели по Стратегии Sweep & Engulfing филигранно взяты!</i>"
                 )
@@ -763,8 +763,8 @@ def track_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> int:
                 be_p_c = _fmt_pc(entry)
                 be_text = (
                     f"🛡️ <b>БЕЗУБЫТОК СРАБОТАЛ по цене {be_p_c}!</b>\n\n"
-                    f"✅ Оставшиеся 70% позиции закрыты в точке безубытка.\n"
-                    f"💰 Итоговая чистая прибыль по сделке: <b>+${total_be_net_usd:.2f} (+{be_r:+.2f}R)</b> (благодаря фиксации 30% на TP1).\n"
+                    f"✅ Оставшиеся 60% позиции закрыты в точке безубытка.\n"
+                    f"💰 Итоговая чистая прибыль по сделке: <b>+${total_be_net_usd:.2f} (+{be_r:+.2f}R)</b> (благодаря фиксации 40% на TP1).\n"
                     f"Сделка защищена от разворота рынка и завершена в плюс!"
                 )
                 send_trade_update_reply(reply_to_message_id=tg_msg_id, text=be_text)

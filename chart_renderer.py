@@ -618,8 +618,8 @@ def render_signal_chart(
 
         # 2. Тейк-Профиты Model 2 (TP1: 30% +1.5R Net -> БУ, TP2: 70% +3.0R Net)
         tp_configs = [
-            ("TP1 +1.5R", trade_plan.tp1_price, trade_plan.tp1_pct, "30% -> BE", '#26A69A', '--', 1.6),
-            ("TP2 +3.0R", trade_plan.tp2_price, trade_plan.tp2_pct, "70% Final", '#00E676', '-', 2.0),
+            ("TP1 1.5x (+2.27R)", trade_plan.tp1_price, trade_plan.tp1_pct, "40% -> BE", '#26A69A', '--', 1.6),
+            ("TP2 3.5x (+5.30R)", trade_plan.tp2_price, trade_plan.tp2_pct, "60% Final", '#00E676', '-', 2.0),
         ]
         for tp_label, tp_p, tp_pct, tp_sh, tp_clr, tp_style, tp_lw in tp_configs:
             ax_price.plot(
@@ -787,11 +787,11 @@ def annotate_chart_with_analysis(
         y += 15
         draw.text((x0 + 4, y), f"Entry (Limit 50%): {_smart_price_fmt(trade_plan.entry_price)}", fill=(255, 183, 77), font=font_small)
         y += 14
-        draw.text((x0 + 4, y), f"SL (0.15% buf): {_smart_price_fmt(trade_plan.sl_price)} (-{trade_plan.sl_pct:.2f}%)", fill=(239, 83, 80), font=font_small)
+        draw.text((x0 + 4, y), f"SL (83% / 0.17): {_smart_price_fmt(trade_plan.sl_price)} (-{trade_plan.sl_pct:.2f}%)", fill=(239, 83, 80), font=font_small)
         y += 14
-        draw.text((x0 + 4, y), f"TP1 (+1.5R | 30%): {_smart_price_fmt(trade_plan.tp1_price)} (+{trade_plan.tp1_pct:.2f}% -> BE)", fill=(38, 166, 154), font=font_small)
+        draw.text((x0 + 4, y), f"TP1 (1.5x | 40%): {_smart_price_fmt(trade_plan.tp1_price)} (+{trade_plan.tp1_pct:.2f}% -> BE)", fill=(38, 166, 154), font=font_small)
         y += 14
-        draw.text((x0 + 4, y), f"TP2 (+3.0R | 70%): {_smart_price_fmt(trade_plan.tp2_price)} (+{trade_plan.tp2_pct:.2f}% Final)", fill=(0, 230, 118), font=font_small)
+        draw.text((x0 + 4, y), f"TP2 (3.5x | 60%): {_smart_price_fmt(trade_plan.tp2_price)} (+{trade_plan.tp2_pct:.2f}% Final)", fill=(0, 230, 118), font=font_small)
         y += 15
         imp_s = f"{'+' if signal_direction == 'SHORT' else '-'}{trade_plan.impulse_pct:.2f}%"
         draw.text((x0 + 4, y), f"R:R: {trade_plan.rr_ratio:.1f}:1  |  Impulse: {_smart_price_fmt(trade_plan.impulse_range)} ({imp_s})", fill=(255, 215, 0), font=font_small)

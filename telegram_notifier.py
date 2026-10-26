@@ -96,11 +96,11 @@ def format_signal_message(
     if direction == "SHORT":
         header = "🔴 <b>МЕДВЕЖИЙ ИМПУЛЬС ЗАВЕРШЁН (W5)</b>"
         dir_badge = "▼ <b>SHORT</b>"
-        sl_note = "└ Стоп-Маркет за тень с буфером 0.15%"
+        sl_note = "└ Стоп внутри свечи на уровне 83% (0.17 от экстремума W5)"
     else:
         header = "🟢 <b>БЫЧИЙ ИМПУЛЬС ЗАВЕРШЁН (W5)</b>"
         dir_badge = "▲ <b>LONG</b>"
-        sl_note = "└ Стоп-Маркет за тень с буфером 0.15%"
+        sl_note = "└ Стоп внутри свечи на уровне 83% (0.17 от экстремума W5)"
 
     conflict_banner = ""
     if conflict_note:
@@ -139,10 +139,10 @@ def format_signal_message(
             f"   └ Маржа: <b>{margin_str}</b> (плечо {lev}x │ риск <b>${risk_usd:.1f}</b>)\n\n"
             f"2️⃣ 🛑 <b>STOP LOSS:</b> {sl_c} (−{trade_plan.sl_pct:.2f}%)\n"
             f"   {sl_note}\n\n"
-            f"3️⃣ 🎯 <b>TP1 (+1.5R Net):</b> {tp1_c} (+{trade_plan.tp1_pct:.2f}%)\n"
-            f"   └ Закрыть 30%: {tp1_coins_c} монет (<b>{tp1_vol_s}</b>) ➔ стоп в БУ\n\n"
-            f"4️⃣ 🎯 <b>TP2 (+3.0R Net):</b> {tp2_c} (+{trade_plan.tp2_pct:.2f}%)\n"
-            f"   └ Закрыть 70%: {tp2_coins_c} монет (<b>{tp2_vol_s}</b>)\n\n"
+            f"3️⃣ 🎯 <b>TP1 (1.5x │ +2.27R Net):</b> {tp1_c} (+{trade_plan.tp1_pct:.2f}%)\n"
+            f"   └ Закрыть 40%: {tp1_coins_c} монет (<b>{tp1_vol_s}</b>) ➔ стоп в БУ\n\n"
+            f"4️⃣ 🎯 <b>TP2 (3.5x │ +5.30R Net):</b> {tp2_c} (+{trade_plan.tp2_pct:.2f}%)\n"
+            f"   └ Закрыть 60%: {tp2_coins_c} монет (<b>{tp2_vol_s}</b>)\n\n"
         )
     else:
         price_c = _fmt_pc(signal_price)

@@ -71,7 +71,7 @@ from analytics_db import (
     load_all_signal_keys,
 )
 from outcome_tracker import OutcomeTrackerWorker
-from runtime_settings import get_runtime_config, is_night_mode_active, get_msk_time
+from runtime_settings import get_runtime_config, is_night_mode_active, get_msk_time, is_bar_allowed_by_schedule
 from telegram_bot_ui import start_bot_ui_thread
 
 logging.basicConfig(
@@ -206,7 +206,7 @@ def get_candle_timing_state(interval: str, now_ts: Optional[float] = None) -> Tu
     elapsed_in_bar = now_ts % tf_sec
     sec_to_close = tf_sec - elapsed_in_bar
 
-    if PRE_CLOSE_WINDOW_MIN_SEC <= sec_to_close <= PRE_CLOSE_WINDOW_MAX_SEC:
+    if False and PRE_CLOSE_WINDOW_MIN_SEC <= sec_to_close <= PRE_CLOSE_WINDOW_MAX_SEC:
         return "pre_close", sec_to_close
     if elapsed_in_bar <= POST_CLOSE_FALLBACK_SEC:
         return "post_close", 0.0
@@ -226,8 +226,8 @@ def _compute_smart_sleep_sec(intervals: List[str], max_sleep: float = 25.0) -> f
         tf_sec = TF_SECONDS_MAP.get(tf, 900)
         elapsed = now_ts % tf_sec
         targets = [
-            tf_sec - float(PRE_CLOSE_SIGNAL_SEC) + 0.5,  # ровно за ~60с до закрытия
-            tf_sec - 22.0,                               # контрольный скан за 22с до закрытия
+            float(tf_sec) + 2.0,                         # скан сразу после закрытия свечи (+2с)
+            float(tf_sec) + 18.0,                        # контрольный скан через 18с после закрытия
             float(tf_sec) + 2.0,                         # контрольный скан через 2с после закрытия
         ]
         for t_target in targets:
@@ -282,7 +282,7 @@ def fetch_binance_klines(
     # Фоллбэк: Bybit linear klines
     try:
         # Конвертация интервала для Bybit: 5m -> 5, 15m -> 15, 1h -> 60, 4h -> 240, 1d -> D
-        bybit_tf_map = {"5m": "5", "15m": "15", "1h": "60", "4h": "240", "1d": "D"}
+        bybit_tf_map = {"5m": "5", "15m": "15", "30m": "30", "1h": "60", "4h": "240", "1d": "D"}
         bybit_interval = bybit_tf_map.get(interval, "15")
         bybit_url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval={bybit_interval}&limit={limit}"
         resp_b = requests.get(bybit_url, headers=headers, timeout=10)
@@ -333,7 +333,7 @@ def scan_live_pair(
         timing_mode, sec_to_close = get_candle_timing_state(interval)
         if timing_mode == "idle":
             return None
-        include_forming = (timing_mode == "pre_close")
+        include_forming = False
 
     df = fetch_binance_klines(symbol, interval, limit=120, include_forming=include_forming)
     if df is None or len(df) < 50:
@@ -480,6 +480,10 @@ def scan_live_pair(
     # Берём самый свежий кандидат
     candidates.sort(key=lambda c: c[0], reverse=True)
     p2, direction, p1, p1_price, p1_rsi, p2_rsi, p2_price, algo_res = candidates[0]
+    if not dry_run and isinstance(df.index, pd.DatetimeIndex):
+        allowed_sched, _ = is_bar_allowed_by_schedule(df.index[p2], interval, cfg)
+        if not allowed_sched:
+            return None
 
     # Проверка на дубликат по временной метке бара W5 и сдвигу экстремумов
     bar_ts = int(df.index[p2].timestamp()) if isinstance(df.index, pd.DatetimeIndex) else p2
@@ -524,7 +528,7 @@ def scan_live_pair(
     # Длительность формирования
     w0_bar = algo_res.wave_indices.get("W0", p1 - 20)
     dur_bars = p2 - w0_bar
-    unit_m = 5 if interval == "5m" else 15 if interval == "15m" else 60 if interval == "1h" else 240 if interval == "4h" else 1440
+    unit_m = 5 if interval == "5m" else 15 if interval == "15m" else 30 if interval == "30m" else 60 if interval == "1h" else 240 if interval == "4h" else 1440
     dur_hours = (dur_bars * unit_m) / 60.0
 
     w0_rsi = algo_res.details.get("w0_rsi")
@@ -756,7 +760,7 @@ def run_scanner_loop(
     logger.info(f"   Активов: {len(symbols)} | Таймфреймов: {len(intervals)} | Всего пар: {len(symbols) * len(intervals)}")
     logger.info(f"   Интервал сканирования: каждые {scan_interval_sec} сек | Поток: {max_workers}")
     logger.info(f"   Минимум для Telegram: Score ≥ {TELEGRAM_MIN_SCORE}% (Textbook)")
-    logger.info("   Торговый план: Limit 50% candle S │ Буфер SL 0.15% │ TP1 30% (+1.5R Net) -> БУ │ TP2 70% (+3.0R Net)")
+    logger.info("   Торговый план: Limit 50% candle S │ SL 83% свечи (0.17 от W5) │ TP1 40% (1.5x | +2.27R) -> БУ │ TP2 60% (3.5x | +5.30R)")
     logger.info(f"   Vision AI модуль: {'ВКЛЮЧЕН' if ENABLE_VISION_FILTER else 'ВЫКЛЮЧЕН (чистый алгоритмический скоринг)'}")
     logger.info("=" * 72)
 
@@ -801,7 +805,7 @@ def run_scanner_loop(
             continue
 
         is_night, night_hours_str = is_night_mode_active(cfg)
-        if is_night:
+        if is_night and get_msk_time().weekday() == 6:
             now_msk_str = get_msk_time().strftime("%H:%M")
             logger.info(f"🌙 [Ночной режим {night_hours_str}] Текущее время {now_msk_str} МСК. Поиск новых импульсов приостановлен (сопровождение открытых сделок активно)...")
             time.sleep(scan_interval_sec)
@@ -819,7 +823,7 @@ def run_scanner_loop(
                 active_tfs_info.append(f"{tf}(dry_run)")
             else:
                 mode, s_left = get_candle_timing_state(tf)
-                if mode != "idle":
+                if mode != "idle" and (not is_night or tf in ("4h", "1d")):
                     active_intervals_now.append(tf)
                     if mode == "pre_close":
                         active_tfs_info.append(f"{tf}(за {int(round(s_left))}с до закр.)")
