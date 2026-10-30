@@ -686,12 +686,12 @@ def track_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> int:
             if tg_msg_id:
                 dir_label = "LONG 🟢" if direction == "LONG" else "SHORT 🔴"
                 entry_text = (
-                    f"✅ <b>ВХОД В СДЕЛКУ АКТИВИРОВАН (Limit 50%): {_fmt_pc(entry)}</b>\n\n"
+                    f"✅ <b>ВХОД В СДЕЛКУ АКТИВИРОВАН (Limit 61.8% / 0.618): {_fmt_pc(entry)}</b>\n\n"
                     f"📌 <b>Инструмент:</b> #{sym} ({tf}) — {dir_label}\n"
-                    f"🎯 <b>Цена вернулась на 50% сигнальной свечи и исполнила лимитный ордер!</b>\n"
+                    f"🎯 <b>Цена вернулась на 61.8% (0.618) сигнальной свечи и исполнила лимитный ордер!</b>\n"
                     f"├ 🛑 <b>Stop Loss (83% свечи):</b> {_fmt_pc(sl)} (Риск: -${risk_usd:.2f} / -1.0R)\n"
-                    f"├ 🎯 <b>TP1 (40% объёма | 1.5x / +2.27R Net):</b> {_fmt_pc(tp1)} ➔ после взятия стоп в БУ\n"
-                    f"└ 🏆 <b>TP2 (60% объёма | 3.5x / +5.30R Net):</b> {_fmt_pc(tp2)} (финальный выход)"
+                    f"├ 🎯 <b>TP1 (40% объёма | 1.5x / +3.54R Net):</b> {_fmt_pc(tp1)} ➔ после взятия стоп в БУ\n"
+                    f"└ 🏆 <b>TP2 (60% объёма | 3.5x / +8.25R Net):</b> {_fmt_pc(tp2)} (финальный выход)"
                 )
                 send_trade_update_reply(reply_to_message_id=tg_msg_id, text=entry_text)
                 logger.info(f"📤 Отправлено уведомление о входе (Limit 50%) для #{sig_id} {sym}")
@@ -703,13 +703,13 @@ def track_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> int:
             if tg_msg_id:
                 if cancel_reason == "tp1_without_entry":
                     reason_str = (
-                        f"Цена импульсно дошла до уровня TP1 ({_fmt_pc(tp1)}) <b>без ретеста точки входа 50%</b> "
+                        f"Цена импульсно дошла до уровня TP1 ({_fmt_pc(tp1)}) <b>без ретеста точки входа 61.8% (0.618)</b> "
                         f"({_fmt_pc(entry)})."
                     )
                 else:
                     reason_str = (
                         f"За отведённые {ENTRY_MAX_WAIT_BARS} свечей ({tf}) цена не скорректировалась "
-                        f"до лимитного уровня входа 50% ({_fmt_pc(entry)})."
+                        f"до лимитного уровня входа 61.8% / 0.618 ({_fmt_pc(entry)})."
                     )
                 cancel_text = (
                     f"⚪ <b>ЛИМИТНЫЙ ОРДЕР ОТМЕНЁН (СДЕЛКА НЕ АКТИВИРОВАНА)</b>\n\n"
@@ -727,9 +727,9 @@ def track_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> int:
                 be_price_c = _fmt_pc(entry)
                 tp1_text = (
                     f"🎯 <b>TP1 ВЗЯТ по цене {_fmt_pc(tp1)} (+{tp1_gain_pct:.2f}%)!</b>\n\n"
-                    f"✅ Зафиксировано <b>40% позиции (1.5x | +2.27R Net)</b>: <b>+${tp1_net_usd:.2f}</b> чистыми (с вычетом комиссий).\n"
+                    f"✅ Зафиксировано <b>40% позиции (1.5x | +3.54R Net)</b>: <b>+${tp1_net_usd:.2f}</b> чистыми (с вычетом комиссий).\n"
                     f"🛡️ <b>СРОЧНОЕ ДЕЙСТВИЕ:</b> Перенесите Stop Loss оставшихся 60% в <b>БЕЗУБЫТОК</b> на цену входа {be_price_c}.\n\n"
-                    f"👉 Держите лимитный ордер на финальный TP2: {_fmt_pc(tp2)} (3.5x | +5.30R Net)."
+                    f"👉 Держите лимитный ордер на финальный TP2: {_fmt_pc(tp2)} (3.5x | +8.25R Net)."
                 )
                 send_trade_update_reply(reply_to_message_id=tg_msg_id, text=tp1_text)
                 logger.info(f"📤 Отправлено уведомление TP1 для #{sig_id} {sym}")
@@ -742,11 +742,11 @@ def track_active_signals(db_path: Path | str = ANALYTICS_DB_PATH) -> int:
             full_r = full_tp_profit_usd / risk_usd if risk_usd > 0 else 0.0
             if tg_msg_id:
                 tp2_text = (
-                    f"🏆 <b>TP2 (ФИНАЛЬНАЯ ЦЕЛЬ 3.5x / +5.30R Net) ВЗЯТ по цене {_fmt_pc(tp2)} (+{tp2_gain_pct:.2f}%)!</b>\n\n"
+                    f"🏆 <b>TP2 (ФИНАЛЬНАЯ ЦЕЛЬ 3.5x / +8.25R Net) ВЗЯТ по цене {_fmt_pc(tp2)} (+{tp2_gain_pct:.2f}%)!</b>\n\n"
                     f"✅ Зафиксированы оставшиеся <b>60% позиции</b>: <b>+${tp2_net_usd:.2f}</b> чистыми.\n"
                     f"🎉 <b>СДЕЛКА ПОЛНОСТЬЮ ЗАКРЫТА С МАКСИМАЛЬНЫМ ПРОФИТОМ:</b>\n"
-                    f"├ TP1 (40%): +${tp1_net_usd:.2f} (1.5x | +2.27R Net)\n"
-                    f"├ TP2 (60%): +${tp2_net_usd:.2f} (3.5x | +5.30R Net)\n"
+                    f"├ TP1 (40%): +${tp1_net_usd:.2f} (1.5x | +3.54R Net)\n"
+                    f"├ TP2 (60%): +${tp2_net_usd:.2f} (3.5x | +8.25R Net)\n"
                     f"└ 💰 <b>Итоговый чистый PnL: +${full_tp_profit_usd:.2f} (+{full_r:+.2f}R с учётом комиссий)</b>\n\n"
                     f"🏁 <i>Обе цели по Стратегии Sweep & Engulfing филигранно взяты!</i>"
                 )

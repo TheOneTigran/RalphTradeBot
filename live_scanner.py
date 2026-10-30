@@ -50,6 +50,7 @@ from config import (
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
     RISK_BUDGET_USD, DEFAULT_LEVERAGE,
     ENABLE_VISION_FILTER,
+    ENTRY_RETRACEMENT_FIB,
     PRE_CLOSE_SIGNAL_SEC, PRE_CLOSE_WINDOW_MIN_SEC,
     PRE_CLOSE_WINDOW_MAX_SEC, POST_CLOSE_FALLBACK_SEC,
 )
@@ -142,15 +143,19 @@ def is_duplicate_signal_candidate(
         if sig_id in seen_signals:
             return True, f"in_memory_sig_id ({sig_id})"
 
-        recent_list = _recent_signals_cache.get((symbol, interval, direction), [])
-        for prev_ts, prev_w5 in recent_list:
-            delta_bars = abs(bar_ts - prev_ts) / bar_sec if bar_sec > 0 else 0
-            if delta_bars <= 3.0:
-                return True, f"in_memory_pivot_jitter (shift={delta_bars:.1f} bars)"
-            if prev_w5 > 0 and delta_bars <= 6.0:
-                diff_pct = abs(w5_price - prev_w5) / prev_w5
-                if diff_pct <= 0.015:
-                    return True, f"in_memory_same_zone (delta={delta_bars:.1f} bars, diff={diff_pct*100:.2f}%)"
+        # Кросс-ТФ проверка в памяти: блокируем повторное открытие той же монеты на другом ТФ в пределах 6 баров
+        for (c_sym, c_tf, _), r_list in _recent_signals_cache.items():
+            if c_sym != symbol:
+                continue
+            eff_sec = max(bar_sec, TF_SECONDS_MAP.get(c_tf, 900))
+            for prev_ts, prev_w5 in r_list:
+                delta_bars = abs(bar_ts - prev_ts) / eff_sec if eff_sec > 0 else 0
+                if delta_bars <= 6.0:
+                    return True, f"in_memory_cross_tf_dedup ({c_sym} {c_tf}, delta={delta_bars:.1f} bars)"
+                if prev_w5 > 0 and delta_bars <= 8.0:
+                    diff_pct = abs(w5_price - prev_w5) / prev_w5
+                    if diff_pct <= 0.015:
+                        return True, f"in_memory_same_zone ({c_sym} {c_tf}, delta={delta_bars:.1f} bars, diff={diff_pct*100:.2f}%)"
 
     # Проверка по SQLite БД
     is_dup_db, reason_db = is_signal_duplicate_in_db(
@@ -206,7 +211,7 @@ def get_candle_timing_state(interval: str, now_ts: Optional[float] = None) -> Tu
     elapsed_in_bar = now_ts % tf_sec
     sec_to_close = tf_sec - elapsed_in_bar
 
-    if False and PRE_CLOSE_WINDOW_MIN_SEC <= sec_to_close <= PRE_CLOSE_WINDOW_MAX_SEC:
+    if PRE_CLOSE_WINDOW_MIN_SEC <= sec_to_close <= PRE_CLOSE_WINDOW_MAX_SEC:
         return "pre_close", sec_to_close
     if elapsed_in_bar <= POST_CLOSE_FALLBACK_SEC:
         return "post_close", 0.0
@@ -226,9 +231,9 @@ def _compute_smart_sleep_sec(intervals: List[str], max_sleep: float = 25.0) -> f
         tf_sec = TF_SECONDS_MAP.get(tf, 900)
         elapsed = now_ts % tf_sec
         targets = [
-            float(tf_sec) + 2.0,                         # скан сразу после закрытия свечи (+2с)
-            float(tf_sec) + 18.0,                        # контрольный скан через 18с после закрытия
-            float(tf_sec) + 2.0,                         # контрольный скан через 2с после закрытия
+            float(tf_sec) - float(PRE_CLOSE_SIGNAL_SEC) + 2.0,  # основной скан за 2 минуты (120с) до закрытия свечи
+            float(tf_sec) - 58.0,                               # повторный скан за 1 минуту до закрытия свечи
+            float(tf_sec) + 2.0,                                # контрольный фоллбэк сразу после закрытия свечи (+2с)
         ]
         for t_target in targets:
             wait = t_target - elapsed
@@ -333,7 +338,7 @@ def scan_live_pair(
         timing_mode, sec_to_close = get_candle_timing_state(interval)
         if timing_mode == "idle":
             return None
-        include_forming = False
+        include_forming = (timing_mode == "pre_close")
 
     df = fetch_binance_klines(symbol, interval, limit=120, include_forming=include_forming)
     if df is None or len(df) < 50:
@@ -348,7 +353,7 @@ def scan_live_pair(
     vol = df['volume'].values.astype(np.float64)
     vol_ma = pd.Series(vol).rolling(15).mean().values
 
-    rsi_len = 7 if interval in ("5m", "15m") else 14
+    rsi_len = 7  # Единый период RSI(7) Уайлдера на всех ТФ (100% паритет с бэктестом)
     rsi = calculate_rsi_wilder(close, period=rsi_len)
 
     pivot_order = 3
@@ -500,9 +505,12 @@ def scan_live_pair(
     if is_dup:
         return None
 
-    # Точка входа: 50% ретрейсмент свечи поглощения (Лимитный ордер)
+    # Точка входа: 0.618 (61.8% золотое сечение) коррекции вглубь свечи поглощения S (Лимитный ордер)
     c_range = high[p2] - low[p2]
-    entry_price = float(low[p2] + 0.50 * c_range)
+    if direction == "SHORT":
+        entry_price = float(low[p2] + ENTRY_RETRACEMENT_FIB * c_range)
+    else:
+        entry_price = float(high[p2] - ENTRY_RETRACEMENT_FIB * c_range)
 
     risk_budget_usd = cfg.get("risk_budget_usd", RISK_BUDGET_USD) if cfg else RISK_BUDGET_USD
     leverage = cfg.get("default_leverage", DEFAULT_LEVERAGE) if cfg else DEFAULT_LEVERAGE
@@ -623,23 +631,21 @@ def scan_live_pair(
         logger.warning(f"Ошибка сохранения аннотированного графика {fn}: {e}")
         chart_path.write_bytes(chart_png)
 
-    # Проверка наличия уже активной позиции по этому инструменту в БД
+    # Строгая кросс-ТФ дедупликация: если по монете уже есть активная сделка (или ожидание лимитки) на любом ТФ — дубль блокируется
     with _seen_lock:
         active_trade = get_active_trade_for_symbol(symbol)
 
+    if active_trade:
+        logger.info(
+            f"⏭️ Кросс-ТФ дедупликация: по {symbol} уже активна сделка #{active_trade['signal_id']} ({active_trade['interval']} {active_trade['direction']}). "
+            f"Дублирующий сигнал на {interval} пропущен."
+        )
+        with _seen_lock:
+            seen_signals.add(sig_id)
+        return None
+
     conflict_note = None
     is_active_trade = True
-    if active_trade:
-        conflict_note = (
-            f"#{active_trade['signal_id']} {active_trade['symbol']} "
-            f"{active_trade['interval']} {active_trade['direction']} "
-            f"(вход: {active_trade['entry_price']})"
-        )
-        is_active_trade = False
-        logger.info(
-            f"ℹ️ {symbol}: уже активна сделка {conflict_note}. "
-            f"Сигнал отправляется в TG как информационный (в трекер позиций новая сделка не открывается)."
-        )
 
     # 6. Отправка подтверждённого сигнала в Telegram (Score >= min_score)
     sent_to_tg_flag = False
@@ -760,7 +766,7 @@ def run_scanner_loop(
     logger.info(f"   Активов: {len(symbols)} | Таймфреймов: {len(intervals)} | Всего пар: {len(symbols) * len(intervals)}")
     logger.info(f"   Интервал сканирования: каждые {scan_interval_sec} сек | Поток: {max_workers}")
     logger.info(f"   Минимум для Telegram: Score ≥ {TELEGRAM_MIN_SCORE}% (Textbook)")
-    logger.info("   Торговый план: Limit 50% candle S │ SL 83% свечи (0.17 от W5) │ TP1 40% (1.5x | +2.27R) -> БУ │ TP2 60% (3.5x | +5.30R)")
+    logger.info("   Торговый план: Limit 61.8% (0.618) candle S │ SL 83% свечи (0.17 от W5) │ TP1 40% (1.5x | +3.54R) -> БУ │ TP2 60% (3.5x | +8.25R) │ Уведомление за 2 мин до закрытия")
     logger.info(f"   Vision AI модуль: {'ВКЛЮЧЕН' if ENABLE_VISION_FILTER else 'ВЫКЛЮЧЕН (чистый алгоритмический скоринг)'}")
     logger.info("=" * 72)
 
@@ -836,7 +842,9 @@ def run_scanner_loop(
             continue
 
         scan_iteration += 1
-        tasks = [(s, i) for s in current_symbols for i in active_intervals_now]
+        tf_prio_order = {"1d": 5, "4h": 4, "1h": 3, "30m": 2, "15m": 1, "5m": 0}
+        sorted_active_tfs = sorted(active_intervals_now, key=lambda x: -tf_prio_order.get(x, 0))
+        tasks = [(s, i) for i in sorted_active_tfs for s in current_symbols]
 
         logger.info(
             f"\n🔄 [Итерация #{scan_iteration}] Сканирование {len(tasks)} пар "

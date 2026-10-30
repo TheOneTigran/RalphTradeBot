@@ -111,9 +111,9 @@ def format_signal_message(
         )
 
     if sec_to_close > 0:
-        timing_line = f"⏳ До закрытия свечи: <b>~{sec_to_close} сек</b> <i>(успейте выставить лимитку 50%)</i>\n"
+        timing_line = f"⏳ До закрытия свечи: <b>~{sec_to_close} сек (~{max(1, round(sec_to_close/60))} мин)</b> <i>(проверьте расчёт и выставьте лимитку 0.618 после закрытия)</i>\n"
     else:
-        timing_line = "⏳ Статус: <b>Ожидание коррекции 50% свечи (Limit-ордер)</b>\n"
+        timing_line = "⏳ Статус: <b>Свеча закрыта — ожидание коррекции 61.8% (0.618 Limit)</b>\n"
 
     if trade_plan is not None:
         entry_c = _fmt_pc(trade_plan.entry_price)
@@ -134,14 +134,14 @@ def format_signal_message(
 
         plan_block = (
             f"━━━ 🎯 <b>КУДА И ЧТО ВЫСТАВЛЯТЬ (ОРДЕРА):</b> ━━━\n\n"
-            f"1️⃣ {dir_badge} │ Вход (Limit 50%): {entry_c}\n"
+            f"1️⃣ {dir_badge} │ Вход (Limit 61.8% / 0.618): {entry_c}\n"
             f"   └ Объем: {coins_c} монет (<b>{pos_vol_str}</b>)\n"
             f"   └ Маржа: <b>{margin_str}</b> (плечо {lev}x │ риск <b>${risk_usd:.1f}</b>)\n\n"
             f"2️⃣ 🛑 <b>STOP LOSS:</b> {sl_c} (−{trade_plan.sl_pct:.2f}%)\n"
             f"   {sl_note}\n\n"
-            f"3️⃣ 🎯 <b>TP1 (1.5x │ +2.27R Net):</b> {tp1_c} (+{trade_plan.tp1_pct:.2f}%)\n"
+            f"3️⃣ 🎯 <b>TP1 (1.5x │ +3.54R Net):</b> {tp1_c} (+{trade_plan.tp1_pct:.2f}%)\n"
             f"   └ Закрыть 40%: {tp1_coins_c} монет (<b>{tp1_vol_s}</b>) ➔ стоп в БУ\n\n"
-            f"4️⃣ 🎯 <b>TP2 (3.5x │ +5.30R Net):</b> {tp2_c} (+{trade_plan.tp2_pct:.2f}%)\n"
+            f"4️⃣ 🎯 <b>TP2 (3.5x │ +8.25R Net):</b> {tp2_c} (+{trade_plan.tp2_pct:.2f}%)\n"
             f"   └ Закрыть 60%: {tp2_coins_c} монет (<b>{tp2_vol_s}</b>)\n\n"
         )
     else:

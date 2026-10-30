@@ -252,8 +252,8 @@ class TelegramUIController:
                 f"├ Завершено (Closed): <b>{st['closed_trades']}</b>\n"
                 f"└ <b>{st['wins']}</b> W (прибыль/БУ) │ <b>{st['losses']}</b> L (стоп) │ <b>{st['be_count']}</b> БУ\n\n"
                 f"🎯 <b>Достижение целей (Model 2: Sweep & Engulfing):</b>\n"
-                f"├ <b>TP1 (1.5x │ +2.27R Net):</b> {st['tp1_count']} раз (фиксация 40% ➔ стоп в БУ)\n"
-                f"├ <b>TP2 (3.5x │ +5.30R Net):</b> {st['tp2_count']} раз (финальная фиксация 60%)\n"
+                f"├ <b>TP1 (1.5x │ +3.54R Net):</b> {st['tp1_count']} раз (фиксация 40% ➔ стоп в БУ)\n"
+                f"├ <b>TP2 (3.5x │ +8.25R Net):</b> {st['tp2_count']} раз (финальная фиксация 60%)\n"
                 f"├ <b>Безубыток (после TP1):</b> {st['be_count']} раз\n"
                 f"└ <b>Stop Loss (-1.0R):</b> {st['sl_count']} раз\n"
             )
@@ -361,7 +361,7 @@ class TelegramUIController:
             pending_cnt = len(trades) - filled_cnt
             text = (
                 f"🎯 <b>АКТИВНЫЕ СДЕЛКИ В ТРЕКЕРЕ ({len(trades)})</b>\n"
-                f"├ В позиции: <b>{filled_cnt}</b> │ Ожидают лимитку 50%: <b>{pending_cnt}</b>\n"
+                f"├ В позиции: <b>{filled_cnt}</b> │ Ожидают лимитку 61.8%: <b>{pending_cnt}</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             )
             for idx, t in enumerate(trades, 1):
@@ -377,11 +377,11 @@ class TelegramUIController:
                 pnl_sign = "+" if pnl_usd >= 0 else ""
                 pnl_em = "🟩" if pnl_usd >= 0 else "🟥"
 
-                state_badge = "🟢 <b>В ПОЗИЦИИ</b>" if entry_filled else "⏳ <b>ОЖИДАЕТ ВХОДА (Limit 50%)</b>"
+                state_badge = "🟢 <b>В ПОЗИЦИИ</b>" if entry_filled else "⏳ <b>ОЖИДАЕТ ВХОДА (Limit 61.8%)</b>"
                 pnl_line = (
                     f"{pnl_em} <b>PnL:</b> <b>{pnl_sign}${pnl_usd:,.2f} ({pnl_sign}{pnl_pct:.2f}%)</b>"
                     if entry_filled
-                    else "⚪ <b>PnL:</b> <i>$0.00 (ждём ретест 50% свечи)</i>"
+                    else "⚪ <b>PnL:</b> <i>$0.00 (ждём ретест 61.8% свечи)</i>"
                 )
 
                 tp1_st = "✅ ВЗЯТ (стоп в БУ)" if t["tp1_hit"] else f"⏳ {_fmt_price(t['tp1_price'])}"
@@ -390,7 +390,7 @@ class TelegramUIController:
 
                 text += (
                     f"<b>#{idx} <code>{sym}</code> ({tf} {em_dir})</b> — {state_badge}\n"
-                    f"├ Вход (50%): <b>{_fmt_price(entry)}</b> │ Тек: <b>{_fmt_price(cur)}</b>\n"
+                    f"├ Вход (61.8%): <b>{_fmt_price(entry)}</b> │ Тек: <b>{_fmt_price(cur)}</b>\n"
                     f"├ {pnl_line}\n"
                     f"├ Объём: ${t['pos_size_usd']:,.1f} │ Риск: ${t['risk_usd']:.1f}\n"
                     f"├ TP1 (40%): {tp1_st}\n"

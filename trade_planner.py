@@ -27,7 +27,7 @@ from config import (
     DEFAULT_LEVERAGE,
     SL_BUFFER_PCT,
     MIN_RR_RATIO,
-    COMMISSION_RATE, SL_ZONE_FROM_EXTREME, TP1_MULT, TP2_MULT,
+    COMMISSION_RATE, ENTRY_RETRACEMENT_FIB, SL_ZONE_FROM_EXTREME, TP1_MULT, TP2_MULT,
 )
 
 logger = logging.getLogger(__name__)
@@ -148,24 +148,17 @@ def calculate_trade_plan(
     fee = COMMISSION_RATE
 
     if direction == "SHORT":
-        # W5 — хай свечи поглощения S. Входим лимиткой на 50% свечи в SHORT.
-        # Стоп-лосс выше хая W5 с буфером 0.15%
-        # Стоп-лосс внутри свечи поглощения S на уровне 83% (0.17 от экстремума W5 внутрь свечи)
-        base_risk_dist = max(w5 - entry_price, 1e-6)
-        candle_range = 2.0 * base_risk_dist
+        # W5 — хай свечи поглощения S. Входим лимиткой на 61.8% (0.618) свечи в SHORT (0.382 от W5).
+        # Стоп-лосс внутри свечи поглощения S на уровне 83% (0.17 от экстремума W5 внутрь свечи).
+        dist_to_w5 = max(w5 - entry_price, 1e-6)
+        candle_range = dist_to_w5 / max(1e-6, 1.0 - ENTRY_RETRACEMENT_FIB)
+        base_risk_dist = 0.50 * candle_range
         sl_price = w5 - SL_ZONE_FROM_EXTREME * candle_range
         if sl_price <= entry_price:
             sl_price = entry_price * 1.003
         base_risk_frac = base_risk_dist / entry_price
-        reward_frac_15 = (TP1_MULT * base_risk_frac + 2.0 * fee) / max(1e-6, 1.0 - fee)
-        reward_frac_30 = (TP2_MULT * base_risk_frac + 2.0 * fee) / max(1e-6, 1.0 - fee)
-        if sl_price <= entry_price:
-            sl_price = entry_price * (1.0 + buffer_pct / 100.0)
 
-        base_risk_dist = max(w5 - entry_price, 1e-6)
-        base_risk_frac = base_risk_dist / entry_price
-
-        # Тейк-профиты с учетом комиссий: TP1 (+1.5R Net) и TP2 (+3.0R Net)
+        # Тейк-профиты с учетом комиссий от базового полудиапазона свечи: TP1 (1.5x | +3.54R Net) и TP2 (3.5x | +8.25R Net)
         reward_frac_15 = (TP1_MULT * base_risk_frac + 2.0 * fee) / max(1e-6, 1.0 - fee)
         reward_frac_30 = (TP2_MULT * base_risk_frac + 2.0 * fee) / max(1e-6, 1.0 - fee)
 
@@ -183,24 +176,17 @@ def calculate_trade_plan(
 
         invalidation_note = f"Пробой W5 (${w5:,.2f}) вверх отменяет разворот"
     else:
-        # W5 — лоу свечи поглощения S. Входим лимиткой на 50% свечи в LONG.
-        # Стоп-лосс ниже лоу W5 с буфером 0.15%
-        # Стоп-лосс внутри свечи поглощения S на уровне 83% (0.17 от экстремума W5 внутрь свечи)
-        base_risk_dist = max(entry_price - w5, 1e-6)
-        candle_range = 2.0 * base_risk_dist
+        # W5 — лоу свечи поглощения S. Входим лимиткой на 61.8% (0.618) свечи в LONG (0.382 от W5).
+        # Стоп-лосс внутри свечи поглощения S на уровне 83% (0.17 от экстремума W5 внутрь свечи).
+        dist_to_w5 = max(entry_price - w5, 1e-6)
+        candle_range = dist_to_w5 / max(1e-6, 1.0 - ENTRY_RETRACEMENT_FIB)
+        base_risk_dist = 0.50 * candle_range
         sl_price = w5 + SL_ZONE_FROM_EXTREME * candle_range
         if sl_price >= entry_price:
             sl_price = entry_price * 0.997
         base_risk_frac = base_risk_dist / entry_price
-        reward_frac_15 = (TP1_MULT * base_risk_frac + 2.0 * fee) / max(1e-6, 1.0 - fee)
-        reward_frac_30 = (TP2_MULT * base_risk_frac + 2.0 * fee) / max(1e-6, 1.0 - fee)
-        if sl_price >= entry_price:
-            sl_price = entry_price * (1.0 - buffer_pct / 100.0)
 
-        base_risk_dist = max(entry_price - w5, 1e-6)
-        base_risk_frac = base_risk_dist / entry_price
-
-        # Тейк-профиты с учетом комиссий: TP1 (+1.5R Net) и TP2 (+3.0R Net)
+        # Тейк-профиты с учетом комиссий от базового полудиапазона свечи: TP1 (1.5x | +3.54R Net) и TP2 (3.5x | +8.25R Net)
         reward_frac_15 = (TP1_MULT * base_risk_frac + 2.0 * fee) / max(1e-6, 1.0 - fee)
         reward_frac_30 = (TP2_MULT * base_risk_frac + 2.0 * fee) / max(1e-6, 1.0 - fee)
 
@@ -229,7 +215,8 @@ def calculate_trade_plan(
         tp2_share * tp2_pct
     )
 
-    rr_ratio = round((tp1_share * TP1_MULT + tp2_share * TP2_MULT) / max(0.01, (1.0 - 2.0 * SL_ZONE_FROM_EXTREME)), 2)  # 4.09R Net при полном TP2
+    sl_candle_frac = max(0.01, (1.0 - SL_ZONE_FROM_EXTREME) - ENTRY_RETRACEMENT_FIB)  # 0.83 - 0.618 = 0.212 свечи
+    rr_ratio = round((tp1_share * TP1_MULT + tp2_share * TP2_MULT) * (0.50 / sl_candle_frac), 2)  # 6.37R Net при полном TP2
     is_viable = (rr_ratio >= min_rr_ratio) and (sl_pct > 0.0)
 
     # Расчет точных объемов позиции и маржи

@@ -302,6 +302,37 @@ def is_signal_duplicate_in_db(
         if exact:
             return True, f"exact_key_match ({sig_key})"
 
+        # 1b. Кросс-ТФ дедупликация: если по этой монете уже открыта или ожидает лимитки активная сделка на ЛЮБОМ ТФ
+        active_cross_tf = conn.execute(
+            """
+            SELECT s.id, s.interval, s.direction
+            FROM signals s
+            JOIN signal_outcomes o ON s.id = o.signal_id
+            WHERE s.symbol = ? AND o.status = 'active'
+            LIMIT 1
+            """,
+            (symbol,),
+        ).fetchone()
+        if active_cross_tf:
+            return True, f"active_trade_cross_tf ({symbol} already active on {active_cross_tf['interval']} #{active_cross_tf['id']})"
+
+        # 1c. Кросс-ТФ кулдаун по той же монете на соседних ТФ (чтобы один и тот же импульс не дублировался на 15m, 30m, 1h)
+        cross_rows = conn.execute(
+            """
+            SELECT sig_key, interval, bar_timestamp, w5_price, entry_price
+            FROM signal_dedup
+            WHERE symbol = ?
+              AND bar_timestamp >= ? AND bar_timestamp <= ?
+            ORDER BY bar_timestamp DESC
+            """,
+            (symbol, bar_timestamp - (cooldown_bars * max(bar_sec, 3600)), bar_timestamp + (cooldown_bars * max(bar_sec, 3600))),
+        ).fetchall()
+        for cr in cross_rows:
+            cr_sec = tf_seconds_map.get(cr["interval"], 900)
+            eff_sec = max(bar_sec, cr_sec)
+            if abs(bar_timestamp - cr["bar_timestamp"]) <= cooldown_bars * eff_sec:
+                return True, f"cross_tf_cooldown ({cr['sig_key']})"
+
         # 2. Поиск по недавним сигналам той же монеты, ТФ и направления
         cutoff_ts = bar_timestamp - (cooldown_bars * bar_sec)
         future_cutoff_ts = bar_timestamp + (cooldown_bars * bar_sec)

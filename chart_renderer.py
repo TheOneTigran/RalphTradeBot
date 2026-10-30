@@ -601,7 +601,7 @@ def render_signal_chart(
         )
         ax_price.text(
             text_x, trade_plan.entry_price,
-            f" [Entry 50%] {_smart_price_fmt(trade_plan.entry_price)}",
+            f" [Entry 61.8%] {_smart_price_fmt(trade_plan.entry_price)}",
             color='#FFB74D', fontsize=7.2, fontweight='bold', va='center', zorder=11
         )
 
@@ -618,8 +618,8 @@ def render_signal_chart(
 
         # 2. Тейк-Профиты Model 2 (TP1: 30% +1.5R Net -> БУ, TP2: 70% +3.0R Net)
         tp_configs = [
-            ("TP1 1.5x (+2.27R)", trade_plan.tp1_price, trade_plan.tp1_pct, "40% -> BE", '#26A69A', '--', 1.6),
-            ("TP2 3.5x (+5.30R)", trade_plan.tp2_price, trade_plan.tp2_pct, "60% Final", '#00E676', '-', 2.0),
+            ("TP1 1.5x (+3.54R)", trade_plan.tp1_price, trade_plan.tp1_pct, "40% -> BE", '#26A69A', '--', 1.6),
+            ("TP2 3.5x (+8.25R)", trade_plan.tp2_price, trade_plan.tp2_pct, "60% Final", '#00E676', '-', 2.0),
         ]
         for tp_label, tp_p, tp_pct, tp_sh, tp_clr, tp_style, tp_lw in tp_configs:
             ax_price.plot(
@@ -785,7 +785,7 @@ def annotate_chart_with_analysis(
         y += 7
         draw.text((x0, y), "TRADE PLAN (MODEL 2: SWEEP & ENGULF):", fill=(255, 215, 0), font=font_small)
         y += 15
-        draw.text((x0 + 4, y), f"Entry (Limit 50%): {_smart_price_fmt(trade_plan.entry_price)}", fill=(255, 183, 77), font=font_small)
+        draw.text((x0 + 4, y), f"Entry (Limit 61.8%): {_smart_price_fmt(trade_plan.entry_price)}", fill=(255, 183, 77), font=font_small)
         y += 14
         draw.text((x0 + 4, y), f"SL (83% / 0.17): {_smart_price_fmt(trade_plan.sl_price)} (-{trade_plan.sl_pct:.2f}%)", fill=(239, 83, 80), font=font_small)
         y += 14
